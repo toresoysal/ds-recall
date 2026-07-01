@@ -1,0 +1,15 @@
+{
+  "indexes": ["CLAUDE.md"],
+  "tracked": ["docs"],
+  "ignore": ["node_modules", ".git"],
+  "sessionsDir": "docs/sessions",
+  "sessionsIndex": ".claude/SESSIONS_INDEX.md",
+  "sizeLimitLines": 200,
+  "sizeLimitBytes": 25600,
+  "protected": ["CLAUDE.md", "DECISIONS.md", "SESSIONS_INDEX.md"],
+  "staleLockHours": 12,
+  "staleDays": 21,
+  "nested": true,
+  "propagateToParent": true,
+  "gateCommit": true
+}

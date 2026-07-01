@@ -1,0 +1,6 @@
+node_modules/
+.claude/active/
+.claude/backups/
+_memory-graph/
+*.log
+.DS_Store
