@@ -33,7 +33,7 @@ const path = require('path');
 
 const ROOT = process.argv[2] || process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
-const DEFAULTS = { sessionsIndex: '.claude/SESSIONS_INDEX.md', projects: [] };
+const DEFAULTS = { sessionsIndex: '.claude/SESSIONS_INDEX.md', projects: [], wrapCommand: '/ds-recall:wrap' };
 
 // Case-insensitive lookup: does any registered project's `match` list claim this topic?
 // Returns the project's `id` (its planet name) or null if unmatched (falls back to the
@@ -204,7 +204,7 @@ function buildGraph(root) {
     planets.unshift({
       id: 'Needs Wrap', status: 'raw', mem: rawSessions.length,
       R: Math.round(rMax * 0.75), type: 'rocky', fortress: true,
-      note: rawSessions.length + ' session(s) still 🟡 RAW — run /ds-recall:wrap to consolidate',
+      note: rawSessions.length + ' session(s) still 🟡 RAW — run ' + cfg.wrapCommand + ' to consolidate',
       tags: ['action-needed'],
       files: rawSessions.slice(0, 6).map(s => (s.path ? path.basename(s.path) : s.id)),
       lastUpdate: (rawSessions[rawSessions.length - 1] || {}).date || '',

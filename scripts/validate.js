@@ -52,18 +52,46 @@ function safeResolve(root, rel, fallbackRel) {
 }
 
 // Bir markdown metnindeki yerel .md referanslarini cikar.
-// 1) [text](path.md) markdown linkleri  2) SADECE '/' iceren duz yollar (docs/x.md).
+// 1) [text](path.md) markdown linkleri  2) `backtick` icindeki yollar  3) SADECE '/' iceren duz yollar.
 // Ciplak dosya-adi mention'lari (MEMORY.md gibi aciklamalar) KASTEN haric — false-positive broken olmasin.
+//
+// PATHS WITH SPACES (fixed 2026-08-02): a path like "my project/notes.md" used to produce a
+// PHANTOM BROKEN entry — the bare-path pattern's character class had no space in it, so the
+// match started AFTER the space and invented a non-existent "project/notes.md". The gate said
+// FAIL while the file sat right there on disk. A gate that raises false red is worse than no
+// gate at all, because nobody reads FAIL any more.
+// The fix has three branches: markdown links (space + %20 -> decodeURIComponent), backtick
+// spans (the backtick is the boundary, so spaces are safe there), and bare paths scanned only
+// AFTER backtick spans have been removed — skip that last condition and the phantom returns.
 function extractRefs(content) {
   const refs = new Set();
-  for (const m of content.matchAll(/\]\(\s*([^)\s#]+\.md)(?:#[^)]*)?\s*\)/g)) {
-    const p = m[1].replace(/\\/g, '/');
-    if (!/^https?:/i.test(p)) refs.add(p);
+  const add = (raw) => {
+    let p = String(raw).replace(/\\/g, '/').trim();
+    if (!p || /^https?:/i.test(p)) return;
+    // markdown linklerinde bosluk %20 ile yazilabilir -> coz. Bozuk kacista ham hali kalsin.
+    if (p.includes('%')) { try { p = decodeURIComponent(p); } catch (_) { /* ham hali */ } }
+    refs.add(p);
+  };
+
+  // 1) [text](path.md) — parantez siniri belirledigi icin bosluk ve %20 guvenli.
+  for (const m of content.matchAll(/\]\(\s*([^)#]+?\.md)(?:#[^)]*)?\s*\)/g)) add(m[1]);
+
+  // 2) `backtick` icindeki yollar — boslukLU klasor adlari burada yasar.
+  //    Backtick sinir oldugu icin bosluga izin vermek prose'u yutmaz.
+  //    Spanlar ayni anda metinden CIKARILIR ki adim 3 onlari tekrar gormesin.
+  const ticked = [];
+  const stripped = content.replace(/`([^`\n]+)`/g, (_whole, inner) => {
+    ticked.push(inner);
+    return ' ';
+  });
+  for (const t of ticked) {
+    const s = t.trim();
+    if (/\.md$/i.test(s) && s.includes('/') && !/[<>|*?]/.test(s)) add(s);
   }
-  for (const m of content.matchAll(/(?:^|[\s("'`])((?:\.{0,2}\/)?[A-Za-z0-9_.\-]+(?:\/[A-Za-z0-9_.\-]+)+\.md)/gm)) {
-    const p = m[1].replace(/\\/g, '/');
-    if (!/^https?:/i.test(p)) refs.add(p);
-  }
+
+  // 3) Ciplak yollar (backtick disi, bosluksuz) — eski davranis birebir korunur.
+  for (const m of stripped.matchAll(/(?:^|[\s("'])((?:\.{0,2}\/)?[A-Za-z0-9_.\-]+(?:\/[A-Za-z0-9_.\-]+)+\.md)/gm)) add(m[1]);
+
   return refs;
 }
 

@@ -1,74 +1,43 @@
 #!/usr/bin/env node
 /*
- * DS-ReCall — SessionStart hook
- * (1) per-session kilit + concurrency tarama
- * (2) oturum stub'ı (idempotent) — opened: damgası ile
- * (3) SESSIONS_INDEX'e RAW satırı (çökmeye dayanıklı) + ESKİ RAW'lar için catch-up dürtüsü
- * (4) Claude'a sistem SAAT/TARİH enjeksiyonu (tarih-halüsinasyon kalkanı)
- * (5) auto-memory KAPALI mı denetimi (ürünün ön-koşulu)
+ * DS-ReCall — SessionStart hook (v0.2)
+ * (1) per-session lock + concurrency scan
+ * (2) session stub (idempotent, one per session id — NOT one per calendar day)
+ * (3) SESSIONS_INDEX line as ⚪ OPEN + catch-up nudge based on REAL WORK
+ * (4) system clock injection (date-hallucination shield)
+ * (5) auto-memory OFF check (product pre-condition)
+ * (6) GC: stubs left behind by sessions that died without SessionEnd
  *
- * Tüm zaman damgaları makine-LOCAL 'YYYY-MM-DD HH:mm'.
+ * ── WHAT CHANGED IN v0.2 AND WHY (measured on the reference workspace, 2026-08-07) ──
+ * v0.1 wrote a "🟡 RAW" index line at every SessionStart and counted those lines to
+ * produce the catch-up warning. Nothing ever removed them, so the warning grew without
+ * bound and stopped meaning anything:
+ *
+ *     warning said            : 59 sessions still RAW
+ *     sessions with real work : 1            (58 stubs had a COMPLETELY EMPTY body)
+ *     stub churn              : 10-19/day, 75% empty (255 of 338)
+ *     same id, N day-stubs    : 58 ids affected, worst case 5 stubs for one session
+ *
+ * A warning that is wrong 98% of the time trains the reader to ignore it — which is
+ * exactly what happened; the operator was closing sessions by hand and the number kept
+ * climbing anyway, because the garbage is created at START, not at the end.
+ *
+ * v0.2 separates "a session existed" from "a session produced work":
+ *   ⚪ OPEN → written here, never warns
+ *   🟡 RAW  → written by SessionEnd/wrap ONLY when the stub actually has content
+ * and empty stubs are collected instead of accumulating.
+ *
  * Input  (stdin JSON): { session_id, cwd, transcript_path, hook_event_name, source }
  * Output (stdout JSON): { hookSpecificOutput: { hookEventName, additionalContext } }
  */
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const L = require('./session-lib.js');
 
 function readStdin() { try { return fs.readFileSync(0, 'utf8').replace(/^﻿/, ''); } catch (_) { return ''; } }
-function sanitize(s) { return String(s).replace(/[^A-Za-z0-9_-]/g, '-'); }
-function pad(n) { return (n < 10 ? '0' : '') + n; }
-function nowLocal() {
-  const d = new Date();
-  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
-    + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
-}
 
-const DEFAULTS = { sessionsDir: 'docs/sessions', staleLockHours: 12, staleDays: 21, nested: true };
-
-// Resolve a config-supplied relative path but refuse to let it escape project root
-// (a copied/malformed ds-recall.config.json with e.g. "sessionsDir": "../../outside"
-// must not turn SessionStart into an arbitrary-path write). Falls back to `fallbackRel`.
-function safeJoin(root, rel, fallbackRel) {
-  const rootAbs = path.resolve(root);
-  const resolved = path.resolve(root, rel);
-  if (resolved === rootAbs || resolved.startsWith(rootAbs + path.sep)) return resolved;
-  return path.resolve(root, fallbackRel);
-}
-
-// nested awareness: nearest ancestor ABOVE root that has its own CLAUDE.md = parent project
-function findParentProject(root) {
-  let dir = path.dirname(root), prev = null;
-  for (let i = 0; i < 24 && dir && dir !== prev; i++) {
-    try { if (fs.existsSync(path.join(dir, 'CLAUDE.md'))) return dir; } catch (_) {}
-    prev = dir; dir = path.dirname(dir);
-  }
-  return null;
-}
-// 'updated:' / 'LAST UPDATED:' / 'SON GÜNCELLEME:' date from the local index (time-blindness: how old is this memory?)
-function indexUpdated(root) {
-  try {
-    const c = fs.readFileSync(path.join(root, 'CLAUDE.md'), 'utf8');
-    const m = c.match(/updated:\s*(\d{4}-\d{2}-\d{2})/i)
-      || c.match(/LAST UPDATED:\s*(\d{4}-\d{2}-\d{2})/i)
-      || c.match(/SON G[ÜU]NCELLEME:?\s*(\d{4}-\d{2}-\d{2})/i);
-    return m ? m[1] : null;
-  } catch (_) { return null; }
-}
-function daysSince(dateStr) {
-  const t = Date.parse(dateStr + 'T00:00:00'); if (isNaN(t)) return null;
-  return Math.floor((Date.now() - t) / 86400000);
-}
-
-function loadConfig(root) {
-  const p = path.join(root, '.claude', 'ds-recall.config.json');
-  if (fs.existsSync(p)) {
-    try { return Object.assign({}, DEFAULTS, JSON.parse(fs.readFileSync(p, 'utf8').replace(/^﻿/, ''))); } catch (_) {}
-  }
-  return DEFAULTS;
-}
-
-// auto-memory KAPALI mı? settings.json autoMemoryEnabled:false VEYA env → OK. Aksi: emin değiliz → uyar.
+// auto-memory OFF? settings.json autoMemoryEnabled:false OR env → OK. Otherwise: warn.
 function autoMemoryOff(root) {
   if (process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY) return true;
   const p = path.join(root, '.claude', 'settings.json');
@@ -88,17 +57,17 @@ function main() {
 
   const sid = input.session_id || process.env.CLAUDE_SESSION_ID || ('unknown-' + Date.now());
   const root = input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
-  const cfg = loadConfig(root);
-  const ssid = sanitize(sid);
+  const cfg = L.loadConfig(root);
+  const ssid = L.sanitize(sid);
   const sid8 = ssid.slice(0, 8);
-  const ts = nowLocal();
+  const ts = L.nowLocal();
   const day = ts.slice(0, 10);
   const claudeDir = path.join(root, '.claude');
   const activeDir = path.join(claudeDir, 'active');
 
   fs.mkdirSync(activeDir, { recursive: true });
 
-  // 1) kilit
+  /* 1) lock */
   const myLock = ssid + '.lock';
   let lockFailed = false;
   try {
@@ -106,7 +75,7 @@ function main() {
       JSON.stringify({ session_id: sid, cwd: root, opened: ts, source: input.source || null }) + '\n');
   } catch (_) { lockFailed = true; }
 
-  // 1.5) stale-lock GC: SessionEnd kaçırıp bırakamadığı hayalet kilitleri SİL (TTL aşmış olanlar)
+  /* 1.5) stale-lock GC — ghost locks from sessions that never reached SessionEnd */
   try {
     const cutoff = Date.now() - (cfg.staleLockHours || 12) * 3600 * 1000;
     for (const f of fs.readdirSync(activeDir)) {
@@ -117,47 +86,46 @@ function main() {
     }
   } catch (_) {}
 
-  // 2) stub (idempotent — opened: damgalı; resume'da ÜZERİNE YAZMA)
-  const stubName = day + '-' + sid8 + '.md';
-  const stubRel = (cfg.sessionsDir + '/' + stubName).replace(/\\/g, '/');
+  /* 2) stub — ONE per session id. Resuming on a later day reuses the original file
+        instead of spawning a second empty one (v0.1 produced up to 5 for one session). */
   let stubFailed = false;
+  let stubName = day + '-' + sid8 + '.md';
+  let stubRel = '';
   try {
-    const sessionsDir = safeJoin(root, cfg.sessionsDir, DEFAULTS.sessionsDir);
+    const sessionsDir = L.safeJoin(root, cfg.sessionsDir, L.DEFAULTS.sessionsDir);
     fs.mkdirSync(sessionsDir, { recursive: true });
-    const stubPath = path.join(sessionsDir, stubName);
-    if (!fs.existsSync(stubPath)) {
-      fs.writeFileSync(stubPath,
+    const existing = L.findStubForSid(sessionsDir, sid8);
+    if (existing) {
+      stubName = existing;
+    } else {
+      fs.writeFileSync(path.join(sessionsDir, stubName),
         '---\nsession: ' + ssid + '\nopened: ' + ts + '\n---\n'
         + '# Session ' + day + ' · <title at /wrap>\n\n'
         + '## What happened\n<!-- SessionStart opened this (empty). /wrap fills it. Status lives in SESSIONS_INDEX. -->\n\n'
         + '## Decisions (→ DECISIONS.md)\n\n'
         + '## Open threads\n');
     }
+    stubRel = (cfg.sessionsDir + '/' + stubName).replace(/\\/g, '/');
   } catch (_) { stubFailed = true; }
 
-  // 3) SESSIONS_INDEX: ESKİ RAW'ları tara (catch-up) + kendi RAW satırını ekle (idempotent)
-  const indexFile = path.join(claudeDir, 'SESSIONS_INDEX.md');
-  let staleRaw = [];
+  /* 2.5) GC — collect stubs abandoned by sessions that died without SessionEnd.
+        Guarded: auto-stub name + empty body + no fresh lock + older than staleLockHours. */
+  let gc = null;
+  if (cfg.gcEmptyStubs !== false) {
+    try { gc = L.gcEmptyStubs(root, cfg); } catch (_) {}
+  }
+
+  /* 3) index line — ⚪ OPEN, written under a lock so concurrent starts cannot duplicate it */
   let indexFailed = false;
   try {
-    if (!fs.existsSync(indexFile)) {
-      fs.writeFileSync(indexFile,
-        '# DS-ReCall — Sessions Index\n'
-        + '> RAW is written at session START; /ds-recall:wrap flips it 🟡 RAW → ✅ CONSOLIDATED.\n\n');
-    }
-    const idx = fs.readFileSync(indexFile, 'utf8');
-    staleRaw = idx.split('\n')
-      // status-marker ONLY (🟡 RAW) — bare word "RAW" also shows up in consolidated
-      // prose (e.g. "6 RAW + 6 resume stub", "2 RAW: a/b") and must not false-positive.
-      .filter(function (l) { return /🟡\s*RAW/.test(l) && l.indexOf(sid8) === -1; })
-      .map(function (l) { var m = l.match(/S-([A-Za-z0-9_-]+)/); return m ? m[1] : null; })
-      .filter(Boolean);
-    if (idx.indexOf('S-' + sid8) === -1) {
-      fs.appendFileSync(indexFile, '- S-' + sid8 + ' · ' + ts + ' · 🟡 RAW · ' + stubRel + '\n');
-    }
+    L.setIndexStatus(root, cfg, sid8, L.STATUS.OPEN, { ts: ts, stubRel: stubRel });
   } catch (_) { indexFailed = true; }
 
-  // 4) concurrency
+  /* 3.5) catch-up — count SESSIONS WITH REAL WORK, not index lines */
+  let pending = [];
+  try { pending = L.pendingWork(root, cfg, sid8); } catch (_) {}
+
+  /* 4) concurrency */
   let others = [];
   try {
     others = fs.readdirSync(activeDir)
@@ -165,36 +133,42 @@ function main() {
       .map(function (f) { return f.replace(/\.lock$/, ''); });
   } catch (_) {}
 
-  // 5) additionalContext: SAAT her zaman + uyarılar (auto-memory / concurrency / catch-up)
+  /* 5) additionalContext */
   const ctx = ['🕐 System time now: ' + ts + ' (machine local). Treat as authoritative — do not guess the date/time.'];
+
   if (!autoMemoryOff(root)) {
     ctx.push('⚠ AUTO-MEMORY may be ON. DS-ReCall expects it OFF — set "autoMemoryEnabled": false in .claude/settings.json (or env CLAUDE_CODE_DISABLE_AUTO_MEMORY=1), else uncurated memory runs alongside and drifts.');
   }
   if (others.length > 0) {
-    ctx.push('CONCURRENCY: ' + others.length + ' other active session(s) (' + others.join(', ') + '). Avoid writing shared canon (CLAUDE.md, docs/DECISIONS.md); write only your own session file. Consolidate one at a time (/ds-recall:wrap).');
+    ctx.push('CONCURRENCY: ' + others.length + ' other active session(s) (' + others.map(o => o.slice(0, 8)).join(', ') + '). Avoid writing shared canon (CLAUDE.md, docs/DECISIONS.md); write only your own session file. Consolidate one at a time (' + cfg.wrapCommand + ').');
   }
-  if (staleRaw.length > 0) {
-    ctx.push('UNCONSOLIDATED: ' + staleRaw.length + ' earlier session(s) still RAW (' + staleRaw.join(', ') + '). Run /ds-recall:wrap to consolidate them before they drift.');
+  if (pending.length > 0) {
+    const shown = pending.slice(0, 12).map(p => p.sid8);
+    ctx.push('UNCONSOLIDATED WORK: ' + pending.length + ' earlier session(s) have content but no ' + cfg.wrapCommand
+      + ' (' + shown.join(', ') + (pending.length > shown.length ? ', +' + (pending.length - shown.length) + ' more' : '') + '). Empty/abandoned stubs are excluded and auto-collected — this count is real work only.');
+  }
+  if (gc && gc.removed.length > 0) {
+    ctx.push('GC: collected ' + gc.removed.length + ' abandoned empty stub(s) (' + gc.empty + ' empty of ' + gc.scanned + ' scanned; kept ' + gc.keptLive + ' live, ' + gc.keptYoung + ' recent).');
   }
   if (lockFailed || stubFailed || indexFailed) {
     const parts = [lockFailed && 'lock', stubFailed && 'session stub', indexFailed && 'SESSIONS_INDEX'].filter(Boolean);
     ctx.push('⚠ WRITE FAILURE: could not write ' + parts.join('/') + ' — check .claude/ exists and is writable. Memory capture may be silently skipped this session.');
   }
 
-  // NESTED: surface the parent project + the up-propagation contract (sub-project sessions feed the parent index)
+  /* NESTED: parent project + up-propagation contract */
   if (cfg.nested !== false) {
-    const parent = findParentProject(root);
+    const parent = L.findParentProject(root);
     if (parent) {
-      ctx.push('NESTED: sub-project of "' + path.basename(parent) + '" (parent index: ' + path.basename(parent) + '/CLAUDE.md). At /ds-recall:wrap your 1-line dated summary propagates UP to ' + path.basename(parent) + '/.claude/CHILD_FEED.md. Honor the parent’s hard rules; keep this sub-project’s detail here, not in the parent.');
+      ctx.push('NESTED: sub-project of "' + path.basename(parent) + '" (parent index: ' + path.basename(parent) + '/CLAUDE.md). At ' + cfg.wrapCommand + ' your 1-line dated summary propagates UP to ' + path.basename(parent) + '/.claude/CHILD_FEED.md. Honor the parent’s hard rules; keep this sub-project’s detail here, not in the parent.');
     }
   }
 
-  // TIME-BLINDNESS: flag a stale local index by its own 'updated' date (old/new indistinguishable without dates)
-  const upd = indexUpdated(root);
+  /* TIME-BLINDNESS: flag a stale local index by its own 'updated' date */
+  const upd = L.indexUpdated(root);
   if (upd) {
-    const age = daysSince(upd);
+    const age = L.daysSince(upd);
     if (age !== null && age > (cfg.staleDays || 21)) {
-      ctx.push('STALE INDEX: this project’s CLAUDE.md says updated ' + upd + ' (' + age + ' days ago). Verify before trusting; refresh "updated:" at /ds-recall:wrap.');
+      ctx.push('STALE INDEX: this project’s CLAUDE.md says updated ' + upd + ' (' + age + ' days ago). Verify before trusting; refresh "updated:" at ' + cfg.wrapCommand + '.');
     }
   }
 

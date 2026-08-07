@@ -11,5 +11,22 @@
   "staleDays": 21,
   "nested": true,
   "propagateToParent": true,
-  "gateCommit": true
+  "gateCommit": true,
+
+  "_v02": "Added in 0.2 — see CHANGELOG.md",
+  "gcEmptyStubs": true,
+  "backupCompressDays": 14,
+  "backupCompressPerRun": 5,
+  "backupDeleteDays": 0,
+  "maxIndexLineChars": 220,
+  "neverTouch": [],
+
+  "evict": {
+    "_why": "The root index grows one session line per wrap and nothing removes them. Left to human discipline it reached 97.8 KB against a 16 KB limit; pruning was planned nine times and deferred nine times. This makes the eviction mechanical.",
+    "file": "CLAUDE.md",
+    "linePattern": "^- \\[S-",
+    "maxLines": 6,
+    "targetFile": "docs/sessions/00-INDEX.md",
+    "targetAnchor": "^## "
+  }
 }

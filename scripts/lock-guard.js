@@ -19,7 +19,8 @@ function sanitize(s) { return String(s).replace(/[^A-Za-z0-9_-]/g, '-'); }
 
 const DEFAULTS = {
   protected: ['CLAUDE.md', 'DECISIONS.md', 'SESSIONS_INDEX.md'], // basename eslesmesi
-  staleLockHours: 12
+  staleLockHours: 12,
+  wrapCommand: '/ds-recall:wrap'
 };
 
 function loadConfig(root) {
@@ -75,7 +76,7 @@ function main() {
       permissionDecision: 'deny',
       permissionDecisionReason:
         `[DS-ReCall] "${base}" is shared canon and ${others.length} other active session(s) hold a lock (${others.join(', ')}). `
-        + `Writing now risks clobbering. Write to your own session file instead, or consolidate one session at a time (/ds-recall:wrap). `
+        + `Writing now risks clobbering. Write to your own session file instead, or consolidate one session at a time (${cfg.wrapCommand}). `
         + `If those sessions are dead, their locks expire after ${cfg.staleLockHours}h.`
     }
   }));

@@ -10,6 +10,36 @@ You are closing a work session. Melt the raw session into the curated, status-ta
 
 Work through the steps below. Do not invent facts — every claim must be verifiable.
 
+---
+
+## 🔴 STEP 0 — RUN THIS FIRST (one command, ~50 ms)
+
+```bash
+node .claude/scripts/wrap-prep.js . --gc
+```
+
+You get a ~40-line briefing: this session's stub and status · sessions that genuinely still
+need consolidating · the root-index line cap · per-session fixed load · integrity.
+
+### ⛔ Do NOT open these files — the script already read them
+
+| file | why not |
+|---|---|
+| `.claude/SESSIONS_INDEX.md` | use `--flip` (step 5) |
+| your history file (e.g. `docs/sessions/00-INDEX.md`) | use `--evict` (step 3a) |
+| `.claude/CHILD_FEED.md` | use `--child-feed` (step 7) |
+
+> **Why this step exists.** Before v0.2 the model had to READ each of these in full just to edit
+> one line, because `Edit` needs an exact match. On the workspace where this was measured that
+> was **~41,400 tokens of forced reading** per wrap — up to ~72,900 once the root-index cap was
+> enforced — before a single word was written. That was the slow, expensive wrap. Flipping a
+> status, moving the oldest line and appending a feed row are mechanical; they do not need a
+> language model. Your tokens belong to the part that needs judgement.
+
+Grepping one line out of those files is fine. Reading them whole is not.
+
+---
+
 ## 1. Read the session
 Review what actually happened: decisions made, problems solved, facts discovered, files changed, open threads.
 
@@ -19,11 +49,37 @@ For each durable decision (one that should outlive this session), append a dated
 ## 3. Update the index (CLAUDE.md)
 Refresh the lean index to reflect the new current state: decisions list, open questions, "last updated". Keep it an INDEX — point to detail files, never copy detail in. **One fact lives in one file** (a copy is drift).
 
+### 3a. Enforce the root-index line cap — mechanically, not by hand
+
+```bash
+node .claude/scripts/wrap-prep.js . --evict
+```
+
+Moves the oldest session line out of `CLAUDE.md` and into your history file (cut-and-paste, not
+a copy). Step 0 already told you whether anything is over the cap.
+
+> **Why this is a command and not an instruction.** When this was left to human discipline, the
+> root index reached **97.8 KB against a 16 KB limit**. Pruning was planned nine times and
+> deferred nine times, and the file grew on every one of those nine occasions. A rule that
+> depends on somebody remembering to delete is not a rule. Configure it under `evict` in
+> `.claude/ds-recall.config.json`.
+
 ## 4. Extract PERMANENT rules → .claude/rules/
 If the session produced a durable "always / never" rule, write it to `.claude/rules/<topic>.md` (native, auto-loaded every session). Don't leave rules buried in conversation.
 
 ## 5. Fill the session stub + mark it consolidated
-`SessionStart` opened an empty stub at `docs/sessions/<date>-<id>.md` (it did NOT fill it). Fill it now: work done, decisions (also logged in step 2), open threads. Then in `SESSIONS_INDEX.md`, flip this session's status `🟡 RAW → ✅ CONSOLIDATED`.
+`SessionStart` opened an empty stub at `docs/sessions/<date>-<id>.md` (it did NOT fill it). Fill it now: work done, decisions (also logged in step 2), open threads. **The full narrative lives here** — the index gets a status, not a paragraph.
+
+Then flip the status **without opening the index**:
+
+```bash
+node .claude/scripts/wrap-prep.js . --flip <id8> --status CONSOLIDATED --label "<Project - Topic - Vol N>" --summary "<short>"
+```
+
+`--summary` is truncated at `maxIndexLineChars` (default 220). That cap is the only structural
+guarantee the machine index does not grow prose again — on the reference workspace the same
+summary was living in **three** places at once (index 51.2 KB + history file 78.0 KB + the
+session file itself), and every wrap had to update all three.
 
 **Title tag (Project - Topic - Vol N):** prefix the index summary (right after the status marker, before the free-text summary) with `[<Project> - <Topic> - Vol <N>]`:
 - `<Project>` = the top-level workspace/project folder name, Title Case (e.g. `Acme`).
@@ -36,21 +92,26 @@ If this session reached a **milestone** (a real turning point, not routine work)
 
 ## 7. Up-propagate to the parent (nested workspaces)
 If this project lives inside a larger workspace (a parent folder with its own `CLAUDE.md`), feed the parent a ONE-LINE dated digest so the company index stays current without bloat:
-- Append/replace this session's line in `<parent>/.claude/CHILD_FEED.md`: `- <this-project> · <YYYY-MM-DD HH:mm> · S-<id> · <≤8-word what-changed>` (replace any SessionEnd placeholder for this session — match on `S-<id>`).
-- If it was a **milestone**, also add a one-line entry under the parent `CLAUDE.md` "Son oturumlar / child feed" section. **Never copy detail up — one line, pointer only.**
+
+```bash
+node .claude/scripts/wrap-prep.js . --child-feed "<this-project> · <YYYY-MM-DD HH:mm> · S-<id> · <≤8-word what-changed>"
+```
+
+- If it was a **milestone**, also add a one-line entry under the parent `CLAUDE.md` recent-sessions section. **Never copy detail up — one line, pointer only.**
 
 ## 8. Refresh staleness + bonds
 - Set the index header `updated: <today>` and `status:` so the next session can tell current-vs-old at a glance (time-blindness shield).
-- If this session created or changed a **cross-project dependency**, record it in the parent's bonds registry (e.g. `00_BAGLAR.md`): typed (`referans | etki | bağımlı | supersedes`), directional, dated. If a referenced file moved/was deleted, mark the bond ⛔ stale.
+- If this session created or changed a **cross-project dependency**, record it in the parent's bonds registry (e.g. `docs/BONDS.md`): typed (`reference | affects | depends-on | supersedes`), directional, dated. If a referenced file moved/was deleted, mark the bond ⛔ stale.
 
 ## 9. Integrity check (gate)
-Run the validator (copied into the project at install — see README) and fix anything it flags:
+Re-run step 0 and require `RESULT: OK` with `broken=0 orphan=0 unindexed=0`. Or call the validator directly:
 
 ```
 node .claude/scripts/validate.js
 ```
 
-Require **0 broken, 0 orphan** before treating the session as closed. **If this errors with "Cannot find module"**, the install step that copies `validate.js` into the project was skipped — copy it from the plugin root (`<plugin>/ds-recall/scripts/validate.js` → `.claude/scripts/validate.js`) and re-run before treating the wrap as sealed.
+Require **0 broken, 0 orphan** before treating the session as closed.
+**Re-running is the point:** "the script ran" is not a verification — seeing the number change is. **If this errors with "Cannot find module"**, the install step that copies `validate.js` into the project was skipped — copy it from the plugin root (`<plugin>/ds-recall/scripts/validate.js` → `.claude/scripts/validate.js`) and re-run before treating the wrap as sealed.
 
 ## 10. Closing seal (the LAST thing you print to chat — required)
 End every wrap with a closing seal that makes it obvious, at a glance, that the session is **finished and saved to memory**. This is the **last thing you print** — add nothing after it. Goal: when an old session is reopened, "consolidated + saved" is instantly clear.

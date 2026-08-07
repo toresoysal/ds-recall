@@ -59,7 +59,7 @@ function main() {
       permissionDecisionReason:
         `[DS-ReCall] Commit blocked — memory integrity FAIL: `
         + `${r.broken.length} broken, ${r.orphans.length} orphan, ${r.unindexed.length} unindexed session(s). `
-        + `Consolidate with /ds-recall:wrap (or inspect: node .claude/scripts/validate.js) before committing. `
+        + `Consolidate with ${cfg.wrapCommand || '/ds-recall:wrap'} (or inspect: node .claude/scripts/validate.js) before committing. `
         + `One-time bypass: set "gateCommit": false in .claude/ds-recall.config.json.`
     }
   }));

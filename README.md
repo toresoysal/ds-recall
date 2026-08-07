@@ -8,6 +8,45 @@ Claude Code's built-in auto-memory accumulates notes *uncurated*. When those not
 
 Not an AI app — the ground AI runs on. Built on a memory protocol proven over ~6 months / ~100 real sessions.
 
+---
+
+## 🆕 What's new in 0.2 — the catch-up warning was lying, and the wrap was paying for it
+
+v0.1 wrote a session stub **and** a `🟡 RAW` index line on every session start, unconditionally,
+and nothing ever removed them. So the catch-up warning counted *index lines* — it was answering
+*"has a line been written?"* instead of *"is there work to consolidate?"*
+
+Measured on the workspace this was built for:
+
+| | |
+|---|---|
+| what the warning said | **59** sessions still unconsolidated |
+| stubs with a completely empty body | **58** |
+| sessions that actually held work | **1** |
+| stub churn | 10-19/day, **75% empty** (255 of 338) |
+| `SessionEnd` never fired for | **88 of 338** stubs (26%) |
+| transcript backups, no rotation | **1,038.9 MB** |
+
+Closing sessions carefully did nothing, because the litter was created at **start**, not at end.
+And the noise hid signal: the new detector surfaced a **7 KB record of a live customer fix** that
+an earlier manual cleanup had mislabelled "empty stub". A gate that is wrong 98% of the time
+teaches you to skip the 2% that matters.
+
+**0.2 fixes the measurement, not the volume of the alarm:**
+
+- a real status machine — `⚪ OPEN` (never warns) → `🟡 RAW` (only when the file has content)
+  → `✅ CONSOLIDATED`. *"A session existed"* and *"a session produced work"* are now different facts.
+- the hook that creates a record now **retracts** it when the record turns out empty
+- `/wrap`'s mechanical half moved into `wrap-prep.js` — it used to cost **~41,400 tokens** of
+  forced index reading to flip one status line
+- backups rotate with **verify-then-delete**, lossless by default
+- a self-test that reports **coverage**, and a negative harness that injects real defects and
+  proves the suite goes red — it found **two blind arms** on its first run
+
+Full detail: **[CHANGELOG.md](CHANGELOG.md)**
+
+---
+
 ## Why
 
 | | Built-in auto-memory | DS-ReCall |
@@ -45,8 +84,8 @@ DS-ReCall doesn't reinvent storage — Claude Code already loads `CLAUDE.md` and
 
 ## Four building blocks
 
-1. **Capture** — `SessionStart` opens a per-session stub (`docs/sessions/<date>-<id>.md`), writes a `RAW` line to `SESSIONS_INDEX.md`, and (catch-up) nudges you if an *earlier* session is still unconsolidated. `SessionEnd` backs up the transcript and releases the lock. The real close is `/wrap`; the `RAW` line is written at **start**, not end, so a crashed session is still caught next time. It also injects the current system clock (anti date-hallucination) and warns if auto-memory isn't disabled.
-2. **Consolidate** — `/ds-recall:wrap`: melt the session into the canon (decisions → log, index refresh, rules → `.claude/rules/`), status-tagged.
+1. **Capture** — `SessionStart` opens a per-session stub (`docs/sessions/<date>-<id>.md`, one per session id — resuming reuses it), writes an `⚪ OPEN` line to `SESSIONS_INDEX.md`, sweeps stubs abandoned by sessions that died without `SessionEnd`, and nudges you only if an *earlier* session **holds real work** and hasn't been wrapped. `SessionEnd` backs up the transcript, rotates old backups, and then decides what the session actually was: empty → the stub and its index line are **retracted**; has content → `closed:` stamp and the line is promoted to `🟡 RAW`. It also injects the current system clock (anti date-hallucination) and warns if auto-memory isn't disabled.
+2. **Consolidate** — `/ds-recall:wrap`: melt the session into the canon (decisions → log, index refresh, rules → `.claude/rules/`), status-tagged. Its mechanical half runs as `wrap-prep.js` so the model never has to read the big index files just to edit one line.
 3. **Validate (Moat-1)** — integrity check: broken-link / orphan / unindexed-session / size. A `PreToolUse` **commit-gate** runs it automatically on every `git commit` and **blocks the commit while integrity is FAIL** — so consistency depends on the system, not on you remembering `/wrap` (bypass once with `gateCommit:false`).
 4. **Concurrency (Moat-2)** — per-session locks + a `PreToolUse` guard that blocks clobbering writes to shared canon while other sessions are live. Stale locks expire on a TTL and are swept at the next `SessionStart`. **Caveat:** the guard hooks the `Write`/`Edit` tools; it does not (and cannot, in general) intercept arbitrary `Bash` redirects into a protected file (e.g. `echo x >> CLAUDE.md`). Treat it as a strong guard against accidental clobbering, not a hard sandbox against a deliberately adversarial agent.
 5. **Visualize** — `/ds-recall:graph` turns `SESSIONS_INDEX.md` into a zero-config Canvas 2D graph: sessions cluster into planets by their `[Project - Topic - Vol N]` filing tag, and every still-unconsolidated session surfaces on one always-visible "Needs Wrap" hot-spot — click it to see exactly what needs `/ds-recall:wrap`. Every session is also independently hoverable/clickable, with an auto-opening quick-look card and a persistent bottom info bar; topics worked on the same calendar day connect with an animated bond (auto-derived, no curation). Optionally group topics under named projects/departments via config (`projects`, see below) — dormant ones (registered, zero sessions) still show up instead of silently vanishing. Unlike a static note-graph (e.g. Obsidian), it's color-coded by curation status, not just link structure. Self-contained HTML, no CDN, no build step; regenerate the data any time with `node scripts/build-memory-graph.js`.
@@ -61,7 +100,13 @@ DS-ReCall doesn't reinvent storage — Claude Code already loads `CLAUDE.md` and
    - `templates/ds-recall.config.json` → `./.claude/ds-recall.config.json`
    - `templates/rule-example.md` → `./.claude/rules/<topic>.md`
    - `scripts/validate.js` → `./.claude/scripts/validate.js` (so `/ds-recall:wrap` can run the integrity gate; command bodies don't expand `${CLAUDE_PLUGIN_ROOT}`)
+   - `scripts/wrap-prep.js` **and** `scripts/session-lib.js` → `./.claude/scripts/` (0.2+ — `/ds-recall:wrap` step 0 calls it; it requires `session-lib.js` from the same folder)
 4. Add `.claude/active/`, `.claude/backups/`, and `_memory-graph/` to your `.gitignore` (the graph is regenerated on demand; `graph.html` is a static copy, not worth diffing).
+5. **Verify the install actually works** (0.2+) — the suites run in a throwaway temp workspace and touch nothing of yours:
+   ```bash
+   node scripts/selftest.js            # 59 cases, prints coverage per group
+   node scripts/selftest-negative.js   # injects real defects, proves the suite goes red
+   ```
 
 ## Commands
 
@@ -81,6 +126,13 @@ DS-ReCall doesn't reinvent storage — Claude Code already loads `CLAUDE.md` and
 | `staleLockHours` | dead-lock expiry + `SessionStart` GC | `12` |
 | `gateCommit` | block `git commit` while integrity is FAIL | `true` |
 | `projects` | optional: roll topic tags up under named projects for `/ds-recall:graph` (see below) | `[]` |
+| **`gcEmptyStubs`** | collect stubs abandoned by sessions that died without `SessionEnd` | `true` |
+| **`backupCompressDays`** | gzip transcript backups older than N days (`0` = off) | `14` |
+| **`backupCompressPerRun`** | cap per hook run, so a big backlog can't stall `SessionEnd` | `5` |
+| **`backupDeleteDays`** | hard-delete `.gz` older than N days. **`0` = never delete** — the default is lossless | `0` |
+| **`maxIndexLineChars`** | truncate `--flip --summary`; keeps the machine index status-only (`0` = no limit) | `0` |
+| **`neverTouch`** | extra filename patterns `cleanup.js` must refuse (your vault/secret dirs) — added on top of the built-in `.env`/`token`/`secret`/`credential`/`.pem`/`.key` floor | `[]` |
+| **`evict`** | mechanical root-index line cap: `{file, linePattern, maxLines, targetFile, targetAnchor}` | see CHANGELOG |
 
 ### Grouping topics into projects (optional, for `/ds-recall:graph`)
 
