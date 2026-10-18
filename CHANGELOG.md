@@ -4,6 +4,87 @@ All notable changes to DS-ReCall are documented here.
 
 ---
 
+## [0.2.1] — 2026-10-18
+
+**Documentation, one-line install, and a Windows fix. No hook behaviour changed.**
+
+0.2.0 was published without a user guide, with a README whose status section still said
+*"v0.1 … not yet published"*, and with no way to install other than cloning the repository.
+This release closes that — and a re-run of the verification step the README tells new users to
+run turned up one real bug.
+
+### Added
+
+- **One-line install from this repo.** `.claude-plugin/marketplace.json` makes the repository a
+  self-hosted marketplace (name `devsoy`):
+
+  ```bash
+  claude plugin install ds-recall --marketplace toresoysal/ds-recall --scope project
+  ```
+
+  Needs Claude Code 2.1.275+. Before this, the only way in was `git clone` + `--plugin-dir`.
+  `claude plugin validate` passes; the install was exercised end to end from a local checkout
+  (marketplace add → install → `plugin list` → `plugin details`) in an isolated Claude config
+  directory, for both user and project scope.
+- **`docs/USER-GUIDE.md`** — install, per-project setup (copy-paste for macOS/Linux and Windows),
+  the daily loop, the status machine, both guards, nested workspaces, maintenance, upgrade,
+  uninstall, cost and privacy, limits. The lifecycle it describes was run on a scratch project
+  (SessionStart → SessionEnd → catch-up warning → `--flip` → validator, including a deliberate
+  broken-link / orphan negative).
+- **`docs/CONFIGURATION.md`** — every key in `.claude/ds-recall.config.json` with its default and
+  which script reads it, read from the source. It also records that `statusCommand` is defined
+  in the defaults but **not read by any script**.
+- **`docs/TROUBLESHOOTING.md`** — symptom → cause → fix.
+- **`.gitattributes`** — keeps the tree LF on every platform.
+
+### Fixed
+
+- **`selftest-negative.js` reported `RESULT: FAIL` on Windows checkouts.** Git for Windows
+  defaults to `core.autocrlf=true`, which checks files out with CRLF line endings. One of the
+  harness's injection anchors spans two lines, so on CRLF it silently stopped matching
+  (`anchor not found`) and the *"verify the install"* step of the README failed on a healthy
+  install. The anchors now adapt to the file's own line ending; restoring the source stays
+  byte-exact. Verified on the same source: **CRLF copy → `CAUGHT 9 · NOT-APPLIED 0 · OK`**,
+  LF copy → same, and the 0.2.0 harness on that CRLF copy → `CAUGHT 8 · NOT-APPLIED 1 · FAIL`
+  (the control that shows the test can see the bug).
+- **User-facing text in English.** `validate.js` printed its diagnostics in Turkish
+  (`! index bulunamadi`, `… satir`, `… config kacagi`, `config parse hatasi`); the header comments
+  of `validate.js`, `commit-gate.js` and `lock-guard.js` were Turkish; `templates/CLAUDE.md` still
+  carried `status: aktif`, `referans | etki | bağımlı` and `SON OTURUMLAR`, while `/wrap` documents
+  the English link types `reference | affects | depends-on | supersedes`. Comments and messages
+  only — the results of `validate.js` on a real workspace are identical before and after.
+- **`validate.js` default `ignore`** no longer lists a folder name specific to the workspace the
+  tool was built in (it had no effect: only `tracked` folders are scanned).
+- **README** — the status section no longer says "v0.1 … not yet published"; the section titled
+  "Four building blocks" listed five; the competitor table no longer claims silent truncation of
+  the built-in memory (see *Changed*).
+
+### Changed
+
+- **README rewritten** around install paths, the one-time project setup, an honest comparison and
+  an explicit *Limits* section. The built-in auto-memory row was corrected: since Claude Code
+  **2.1.210** a write that leaves `MEMORY.md` over its read limit returns an explicit error
+  instead of truncating silently, and since 2.1.268 the truncation warning says how many lines
+  were cut. The remaining difference to DS-ReCall is **curation, not visibility**.
+- **Version** `0.2.0` → `0.2.1` (`plugin.json`, `marketplace.json`).
+
+### Known limitations — documented, not changed
+
+- **The commit-gate is on by default.** On an existing repo with a `docs/` folder that no index
+  links to, `git commit` is blocked until the notes are linked or `"gateCommit": false` is set.
+  Measured on a fresh install. Whether the default should be gentler is an open decision; for now
+  it is called out in the README, the guide and the troubleshooting page.
+- **No retrieval.** There is no search over past sessions — the index plus `grep`.
+- **Project-local copies of `validate.js`, `wrap-prep.js` and `session-lib.js` do not update
+  themselves** when the plugin is upgraded; `/wrap` and `/status` run those copies. Re-copy them.
+- **`cleanup.js` is not covered by the self-test suites.** Read the `--dry-run` output before
+  `--apply`. It also stamps annotated index lines with a fixed date (`2026-08-07`) instead of the
+  run date — cosmetic.
+- **`SESSIONS_INDEX.md` has no automatic cap** (`evict` trims only the root index).
+- **`statusCommand`** is a reserved config key that nothing reads.
+
+---
+
 ## [0.2.0] — 2026-08-07
 
 **The catch-up warning was measuring the wrong thing, and the wrap was paying for it.**

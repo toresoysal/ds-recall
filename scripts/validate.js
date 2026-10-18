@@ -1,18 +1,17 @@
 #!/usr/bin/env node
 /*
- * DS-ReCall — memory integrity validator
- * Köken protokol Bölüm 12 (orphan/broken/boyut) genelleştirilmiş, cross-platform hali.
+ * DS-ReCall — memory integrity validator (cross-platform).
  *
- * Kontroller:
- *   BROKEN     — index dosyalarındaki .md referansı diskte yok (ölü link)
- *   ORPHAN     — izlenen dizindeki .md dosyası hiçbir index'ten referanslı değil (kayıp risk)
- *   UNINDEXED  — sessionsDir'deki session dosyası SESSIONS_INDEX'te yok (= B1 drift sınıfı)
- *   SIZE       — index dosyası satır/byte eşiğini aştı (sadece uyarı, fail değil)
+ * Checks:
+ *   BROKEN     — an index file references a .md that does not exist on disk (dead link)
+ *   ORPHAN     — a .md under a tracked directory that no index file references (lost-knowledge risk)
+ *   UNINDEXED  — a session file in sessionsDir that has no line in SESSIONS_INDEX (drift)
+ *   SIZE       — an index file is over the line/byte threshold (warning only, never a failure)
  *
- * Çıkış kodu: 0 = temiz, 1 = broken/orphan/unindexed bulundu (gate-commit / CI için).
- * Kullanım (CLI): node validate.js [projectRoot]   (yoksa CLAUDE_PROJECT_DIR ya da cwd)
- * Kullanım (modül): const { computeIntegrity } = require('./validate.js'); computeIntegrity(root)
- * Config (opsiyonel): <root>/.claude/ds-recall.config.json  → DEFAULTS'u override eder.
+ * Exit code: 0 = clean, 1 = broken/orphan/unindexed found (used by the commit-gate and CI).
+ * CLI usage:    node validate.js [projectRoot]   (falls back to CLAUDE_PROJECT_DIR, then cwd)
+ * Module usage: const { computeIntegrity } = require('./validate.js'); computeIntegrity(root)
+ * Optional config: <root>/.claude/ds-recall.config.json overrides DEFAULTS.
  */
 'use strict';
 const fs = require('fs');
@@ -21,20 +20,20 @@ const path = require('path');
 const ROOT = process.argv[2] || process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
 const DEFAULTS = {
-  indexes: ['CLAUDE.md'],                 // referans KAYNAĞI (root-relative). Alt-indeks de eklenebilir, ör. 'docs/research/README.md'
-  tracked: ['docs'],                      // orphan için taranan dizinler (root-relative)
-  sessionsDir: 'docs/sessions',           // oto-stub dizini → orphan-muaf (SESSIONS_INDEX izler)
-  sessionsIndex: '.claude/SESSIONS_INDEX.md', // session kapsam denetiminin referansı
-  sizeLimitLines: 200,                    // index satır uyarı eşiği
-  sizeLimitBytes: 25 * 1024,              // index byte uyarı eşiği (auto-memory ~25KB native sınırı)
-  ignore: ['node_modules', '.git', 'ilk-taslaklar'] // taranmayacak isimler
+  indexes: ['CLAUDE.md'],                 // reference SOURCE (root-relative). Sub-indexes can be added, e.g. 'docs/research/README.md'
+  tracked: ['docs'],                      // directories scanned for orphans (root-relative)
+  sessionsDir: 'docs/sessions',           // auto-stub directory → exempt from ORPHAN (SESSIONS_INDEX tracks it)
+  sessionsIndex: '.claude/SESSIONS_INDEX.md', // reference for the session-coverage (UNINDEXED) check
+  sizeLimitLines: 200,                    // index line-count warning threshold
+  sizeLimitBytes: 25 * 1024,              // index byte warning threshold (Claude Code's own MEMORY.md read limit is also 25KB)
+  ignore: ['node_modules', '.git']        // names never scanned
 };
 
 function loadConfig(root) {
   const p = path.join(root, '.claude', 'ds-recall.config.json');
   if (fs.existsSync(p)) {
     try { return Object.assign({}, DEFAULTS, JSON.parse(fs.readFileSync(p, 'utf8').replace(/^﻿/, ''))); }
-    catch (e) { console.error(`! config parse hatasi (${p}), varsayilan kullaniliyor: ${e.message}`); }
+    catch (e) { console.error(`! config parse error (${p}), using defaults: ${e.message}`); }
   }
   return DEFAULTS;
 }
@@ -51,9 +50,9 @@ function safeResolve(root, rel, fallbackRel) {
   return isContained(root, resolved) ? resolved : path.resolve(root, fallbackRel);
 }
 
-// Bir markdown metnindeki yerel .md referanslarini cikar.
-// 1) [text](path.md) markdown linkleri  2) `backtick` icindeki yollar  3) SADECE '/' iceren duz yollar.
-// Ciplak dosya-adi mention'lari (MEMORY.md gibi aciklamalar) KASTEN haric — false-positive broken olmasin.
+// Extract the local .md references from a piece of markdown.
+// 1) [text](path.md) markdown links  2) paths inside `backticks`  3) bare paths that contain a '/'.
+// Bare file-name mentions (prose such as "MEMORY.md") are deliberately excluded so they cannot raise a false BROKEN.
 //
 // PATHS WITH SPACES (fixed 2026-08-02): a path like "my project/notes.md" used to produce a
 // PHANTOM BROKEN entry — the bare-path pattern's character class had no space in it, so the
@@ -76,9 +75,9 @@ function extractRefs(content) {
   // 1) [text](path.md) — parantez siniri belirledigi icin bosluk ve %20 guvenli.
   for (const m of content.matchAll(/\]\(\s*([^)#]+?\.md)(?:#[^)]*)?\s*\)/g)) add(m[1]);
 
-  // 2) `backtick` icindeki yollar — boslukLU klasor adlari burada yasar.
-  //    Backtick sinir oldugu icin bosluga izin vermek prose'u yutmaz.
-  //    Spanlar ayni anda metinden CIKARILIR ki adim 3 onlari tekrar gormesin.
+  // 2) paths inside `backticks` — folder names WITH SPACES live here.
+  //    The backtick is a hard boundary, so allowing spaces cannot swallow surrounding prose.
+  //    The spans are REMOVED from the text at the same time so that step 3 does not see them again.
   const ticked = [];
   const stripped = content.replace(/`([^`\n]+)`/g, (_whole, inner) => {
     ticked.push(inner);
@@ -89,13 +88,13 @@ function extractRefs(content) {
     if (/\.md$/i.test(s) && s.includes('/') && !/[<>|*?]/.test(s)) add(s);
   }
 
-  // 3) Ciplak yollar (backtick disi, bosluksuz) — eski davranis birebir korunur.
+  // 3) bare paths (outside backticks, no spaces) — the original behaviour, preserved exactly.
   for (const m of stripped.matchAll(/(?:^|[\s("'])((?:\.{0,2}\/)?[A-Za-z0-9_.\-]+(?:\/[A-Za-z0-9_.\-]+)+\.md)/gm)) add(m[1]);
 
   return refs;
 }
 
-// Bir dizindeki tum .md dosyalarini recursive listele (ignore haric).
+// List every .md file under a directory, recursively (names in `ignore` are skipped).
 function listMd(dir, ignore) {
   const out = [];
   if (!fs.existsSync(dir)) return out;
@@ -108,7 +107,7 @@ function listMd(dir, ignore) {
   return out;
 }
 
-// Bütünlük hesabı — saf (yan etkisiz, process.exit yok). CLI ve commit-gate hook'u aynı fonksiyonu kullanır.
+// Integrity computation — pure (no side effects, no process.exit). The CLI and the commit-gate hook share this function.
 function computeIntegrity(root) {
   const cfg = loadConfig(root);
   const referenced = new Set();   // mutlak path
@@ -116,14 +115,14 @@ function computeIntegrity(root) {
 
   for (const idx of cfg.indexes) {
     const idxPath = path.resolve(root, idx);
-    if (!isContained(root, idxPath)) { console.error(`! index disi konum reddedildi (config kacagi): ${idx}`); continue; }
-    if (!fs.existsSync(idxPath)) { console.error(`! index bulunamadi: ${idx}`); continue; }
+    if (!isContained(root, idxPath)) { console.error(`! index outside the project root rejected (config escape): ${idx}`); continue; }
+    if (!fs.existsSync(idxPath)) { console.error(`! index file not found: ${idx}`); continue; }
     const content = fs.readFileSync(idxPath, 'utf8');
     for (const ref of extractRefs(content)) {
-      // Referans, içinde geçtiği index dosyasının klasörüne göre çözülür → alt-indeks (docs/research/README.md) doğal çalışır.
+      // A reference resolves relative to the folder of the index file it appears in → a sub-index (docs/research/README.md) just works.
       const target = path.resolve(path.dirname(idxPath), ref);
       referenced.add(target);
-      // .claude/ altı runtime/config (SESSIONS_INDEX vb.) bütünlük kapsamı dışı — oturumda oluşur
+      // anything under .claude/ is runtime/config (SESSIONS_INDEX etc.) and out of integrity scope — it is created during a session
       const isRuntime = /(^|\/)\.claude\//.test(ref.replace(/\\/g, '/'));
       if (!fs.existsSync(target) && !isRuntime) broken.push(`${idx} -> ${ref}`);
     }
@@ -133,17 +132,17 @@ function computeIntegrity(root) {
   const sessionsAbs = cfg.sessionsDir ? safeResolve(root, cfg.sessionsDir, DEFAULTS.sessionsDir) : null;
   for (const td of cfg.tracked) {
     const tdPath = path.resolve(root, td);
-    if (!isContained(root, tdPath)) { console.error(`! tracked disi konum reddedildi (config kacagi): ${td}`); continue; }
+    if (!isContained(root, tdPath)) { console.error(`! tracked dir outside the project root rejected (config escape): ${td}`); continue; }
     for (const f of listMd(tdPath, cfg.ignore)) {
       const abs = path.resolve(f);
-      // session stub'ları SESSIONS_INDEX tarafından izlenir; orphan kapsamı dışı (kapsamları ayrıca UNINDEXED ile denetlenir)
+      // session stubs are tracked by SESSIONS_INDEX and exempt from ORPHAN (their coverage is checked separately, as UNINDEXED)
       if (sessionsAbs && (abs === sessionsAbs || abs.startsWith(sessionsAbs + path.sep))) continue;
       if (!referenced.has(abs)) orphans.push(path.relative(root, f).replace(/\\/g, '/'));
     }
   }
 
-  // UNINDEXED — diskte session dosyası var ama SESSIONS_INDEX'te satırı yok (B1 drift sınıfı).
-  // SESSIONS_INDEX yoksa kontrol atlanır (kırılmaz — index kullanmayan projeyi cezalandırma).
+  // UNINDEXED — a session file exists on disk but has no line in SESSIONS_INDEX (a class of drift).
+  // If SESSIONS_INDEX does not exist the check is skipped (never penalise a project that does not use one).
   const unindexed = [];
   const indexFile = cfg.sessionsIndex ? safeResolve(root, cfg.sessionsIndex, DEFAULTS.sessionsIndex) : null;
   if (sessionsAbs && fs.existsSync(sessionsAbs) && indexFile && fs.existsSync(indexFile)) {
@@ -161,7 +160,7 @@ function computeIntegrity(root) {
     const buf = fs.readFileSync(idxPath);
     const lines = buf.toString('utf8').split('\n').length;
     if (lines > cfg.sizeLimitLines || buf.length > cfg.sizeLimitBytes) {
-      sizeWarn.push(`${idx}: ${lines} satir / ${buf.length}B (limit ${cfg.sizeLimitLines}/${cfg.sizeLimitBytes})`);
+      sizeWarn.push(`${idx}: ${lines} lines / ${buf.length}B (limit ${cfg.sizeLimitLines}/${cfg.sizeLimitBytes})`);
     }
   }
 

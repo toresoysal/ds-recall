@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 /*
- * DS-ReCall — PreToolUse lock guard (concurrency HARD lock, Moat-2)
- * Korunan kanon dosyalarina (CLAUDE.md, DECISIONS.md ...) yazimi, BASKA taze session
- * kilidi aktifken bloklar -> clobbering imkansiz. Stale kilitler (SessionEnd kacirip
- * birakamayinca kalan hayalet kilitler) staleLockHours TTL'i ile yoksayilir.
+ * DS-ReCall — PreToolUse lock guard (concurrency hard lock, Moat-2)
+ * Blocks Write/Edit to the protected canon files (CLAUDE.md, DECISIONS.md, ...) while
+ * ANOTHER session holds a fresh lock, so one session cannot clobber another's edits.
+ * Stale locks (ghosts left by sessions whose SessionEnd never fired) are ignored after
+ * the staleLockHours TTL.
  *
  * Input  (stdin JSON): { session_id, cwd, tool_name, tool_input:{ file_path }, ... }
  * Output (stdout JSON): deny  -> { hookSpecificOutput:{ hookEventName:"PreToolUse",
@@ -51,7 +52,7 @@ function main() {
   const filePath = ti.file_path || ti.path || '';
   const base = path.basename(filePath);
 
-  // Hedef korunan kanon degilse -> izin ver
+  // Target is not a protected canon file → allow
   if (!filePath || !cfg.protected.includes(base)) { return allow(); }
 
   // active/ kilitlerini tara: kendi haric + TAZE olanlar
@@ -65,7 +66,7 @@ function main() {
     if (!f.endsWith('.lock') || f === mine) continue;
     let opened = 0;
     try { opened = Date.parse(JSON.parse(fs.readFileSync(path.join(activeDir, f), 'utf8')).opened) || 0; } catch (_) {}
-    if (opened >= cutoff) others.push(f.replace(/\.lock$/, '')); // sadece taze kilitler
+    if (opened >= cutoff) others.push(f.replace(/\.lock$/, '')); // fresh locks only
   }
 
   if (others.length === 0) { return allow(); }

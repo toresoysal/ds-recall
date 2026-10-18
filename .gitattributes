@@ -1,0 +1,5 @@
+# Keep text files LF in every checkout, including Windows (Git for Windows defaults to
+# core.autocrlf=true, which rewrites the working tree to CRLF). The scripts are line-ending
+# agnostic since 0.2.1, but a predictable tree makes diffs and the self-tests boring.
+* text=auto eol=lf
+*.png binary

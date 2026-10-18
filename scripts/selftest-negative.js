@@ -103,6 +103,12 @@ function runSuite() {
 
 const original = fs.readFileSync(LIB, 'utf8');
 const originalBytes = Buffer.byteLength(original);
+// Anchors are written with \n. A Windows checkout (git autocrlf=true, the Git-for-Windows
+// default) turns the working tree into CRLF, so any multi-line anchor silently stopped
+// matching and the harness reported FAIL on a perfectly healthy install. Match the file's
+// own line ending instead of assuming one. Restore stays byte-exact (we write `original`).
+const EOL = original.indexOf('\r\n') !== -1 ? '\r\n' : '\n';
+const adapt = (s) => s.replace(/\r?\n/g, EOL);
 let blind = 0, caught = 0, unapplied = 0, notExercised = 0;
 
 console.log('DS-ReCall — negative test of the test suite');
@@ -113,7 +119,8 @@ const base = runSuite();
 console.log(`  exit ${base} — ${base === 0 ? 'GREEN as expected' : 'ALREADY RED, fix the suite before trusting this harness'}\n`);
 if (base !== 0) { console.log('RESULT: ABORTED'); process.exit(1); }
 
-for (const inj of INJECTIONS) {
+for (const raw of INJECTIONS) {
+  const inj = Object.assign({}, raw, { find: adapt(raw.find), repl: adapt(raw.repl) });
   if (original.indexOf(inj.find) === -1) {
     unapplied++;
     console.log(`? ${inj.name}`);

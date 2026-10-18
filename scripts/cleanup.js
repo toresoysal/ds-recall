@@ -95,7 +95,7 @@ const idxLines = idxBefore.split('\n');
 
 // A machine-written line is exactly: "- S-<id> · <timestamp> · <status> · <path>".
 // Anything longer carries a HUMAN annotation — a pointer to the real record, or an
-// intention like "wrap'i kendi oturumunda yapılacak (Survival…)". Those are memory, not
+// intention like "to be wrapped in its own session (see Project X)". Those are memory, not
 // litter, and a cleanup must not swallow them just because the stub beside them is empty.
 // Removing the file is safe (it is empty); removing someone's note is not.
 function isMachineOnly(line) {

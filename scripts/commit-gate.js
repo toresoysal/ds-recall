@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 /*
- * DS-ReCall — PreToolUse commit-gate (Moat-1 deterministik tetikleyici)
- * git commit'i, memory integrity FAIL (broken / orphan / unindexed) iken BLOKLAR.
- * Böylece bütünlük, insanın /wrap'i hatırlamasına değil SİSTEME bağlanır.
+ * DS-ReCall — PreToolUse commit-gate (Moat-1, the deterministic trigger)
+ * Blocks `git commit` while memory integrity is FAIL (broken / orphan / unindexed).
+ * Integrity therefore depends on the system, not on a human remembering to run /wrap.
  *
- * Sadece Bash 'git commit' komutlarında devreye girer (diğer her şeye dokunmaz).
- * Kapatma: <root>/.claude/ds-recall.config.json → "gateCommit": false.
- * Validator patlarsa commit ENGELLENMEZ (fail-open — gate, işi durdurmamalı).
+ * Fires only on Bash `git commit` commands; every other command is left alone.
+ * Turn it off: <root>/.claude/ds-recall.config.json → "gateCommit": false.
+ * If the validator itself crashes the commit is NOT blocked (fail-open — a gate must
+ * never stop work because of its own bug).
  *
  * Input  (stdin JSON): { cwd, tool_name, tool_input:{ command }, ... }
  * Output (stdout JSON): deny  -> { hookSpecificOutput:{ hookEventName:"PreToolUse",
@@ -37,11 +38,11 @@ function main() {
   const root = input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
   const cmd = (input.tool_input && input.tool_input.command) || '';
 
-  // Sadece gerçek git commit'lerde devreye gir.
+  // Only act on real git commits.
   if (!/\bgit\s+commit\b/.test(cmd)) return allow();
 
   const cfg = loadCfg(root);
-  if (cfg.gateCommit === false) return allow(); // bilinçli bypass
+  if (cfg.gateCommit === false) return allow(); // deliberate bypass
 
   let r;
   try { r = computeIntegrity(root); } catch (e) {

@@ -1,5 +1,5 @@
 # <Project Name> — Project Index
-> updated: <YYYY-MM-DD> · status: aktif
+> updated: <YYYY-MM-DD> · status: active
 > This file is the INDEX (the hippocampus). Detail lives under `docs/` — point to it with paths, never copy it here.
 > Every fact carries a status tag + a date. An untagged/undated line is NOT a verified fact — old, new, and parallel can't be told apart without a date.
 > Status tags: ✅ verified · ⚠️ assumption · ⛔ outdated · ❓ unknown
@@ -22,9 +22,9 @@
 - <other key locations>        → docs/...
 
 ## 🔗 BONDS (parallel cross-project links — typed, dated)
-- <none yet> — `referans | etki | bağımlı | supersedes` · if nested, mirror to the parent's bonds registry
+- <none yet> — `reference | affects | depends-on | supersedes` · if nested, mirror to the parent's bonds registry
 
-## 📥 CHILD FEED / SON OTURUMLAR (sub-project digests propagate here)
+## 📥 CHILD FEED / RECENT SESSIONS (sub-project digests propagate here)
 <!-- 1 line per session/child, newest first, pointer only — never copy detail up -->
 
 ## ❓ OPEN QUESTIONS (hallucination shield — verify, don't invent)

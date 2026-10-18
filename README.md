@@ -4,162 +4,112 @@
 
 **A curated, hallucination-resistant, session-aware memory layer for Claude Code.**
 
-Claude Code's built-in auto-memory accumulates notes *uncurated*. When those notes drift from your hand-written `CLAUDE.md`, Claude picks arbitrarily and starts "making things up." DS-ReCall replaces that: it turns **off** uncurated auto-memory and disciplines Claude Code's **native** memory layer (`CLAUDE.md` + `.claude/rules/`) with status tags, single-source-of-truth, session-end consolidation, integrity validation, and concurrency safety.
+Claude Code's built-in auto-memory lets *Claude* decide what to remember. DS-ReCall is for the case where you would rather decide yourself. It turns **off** the uncurated auto-memory and disciplines Claude Code's **native** memory layer (`CLAUDE.md` + `.claude/rules/`) with:
 
-Not an AI app — the ground AI runs on. Built on a memory protocol proven over ~6 months / ~100 real sessions.
+- **status-tagged, dated facts** (✅ verified · ⚠️ assumption · ⛔ outdated · ❓ unknown) and *one fact, one file*,
+- a deliberate end-of-session step, **`/ds-recall:wrap`**, that folds what happened into the canon,
+- an **integrity check** (broken links, orphaned notes, unindexed sessions) that can block `git commit`,
+- **session locks** so parallel sessions don't overwrite each other's shared files.
 
----
+The hooks make **no model calls** and **no network requests**, have **no dependencies** beyond Node.js, and keep everything in plain Markdown in your own repo.
 
-## 🆕 What's new in 0.2 — the catch-up warning was lying, and the wrap was paying for it
-
-v0.1 wrote a session stub **and** a `🟡 RAW` index line on every session start, unconditionally,
-and nothing ever removed them. So the catch-up warning counted *index lines* — it was answering
-*"has a line been written?"* instead of *"is there work to consolidate?"*
-
-Measured on the workspace this was built for:
-
-| | |
-|---|---|
-| what the warning said | **59** sessions still unconsolidated |
-| stubs with a completely empty body | **58** |
-| sessions that actually held work | **1** |
-| stub churn | 10-19/day, **75% empty** (255 of 338) |
-| `SessionEnd` never fired for | **88 of 338** stubs (26%) |
-| transcript backups, no rotation | **1,038.9 MB** |
-
-Closing sessions carefully did nothing, because the litter was created at **start**, not at end.
-And the noise hid signal: the new detector surfaced a **7 KB record of a live customer fix** that
-an earlier manual cleanup had mislabelled "empty stub". A gate that is wrong 98% of the time
-teaches you to skip the 2% that matters.
-
-**0.2 fixes the measurement, not the volume of the alarm:**
-
-- a real status machine — `⚪ OPEN` (never warns) → `🟡 RAW` (only when the file has content)
-  → `✅ CONSOLIDATED`. *"A session existed"* and *"a session produced work"* are now different facts.
-- the hook that creates a record now **retracts** it when the record turns out empty
-- `/wrap`'s mechanical half moved into `wrap-prep.js` — it used to cost **~41,400 tokens** of
-  forced index reading to flip one status line
-- backups rotate with **verify-then-delete**, lossless by default
-- a self-test that reports **coverage**, and a negative harness that injects real defects and
-  proves the suite goes red — it found **two blind arms** on its first run
-
-Full detail: **[CHANGELOG.md](CHANGELOG.md)**
+> **Status: v0.2.1.** Core built and tested (59 self-test cases plus a negative harness that injects real defects and proves the suite goes red). Used daily on the workspace it was built for. It is young software with a single maintainer — field reports and issues are welcome.
 
 ---
 
-## Why
+## Is it for you?
 
-| | Built-in auto-memory | DS-ReCall |
-|---|---|---|
-| Who curates | nobody (Claude writes freely) | you + discipline |
-| Drift control | none | status tags + single source + integrity check |
-| Multi-session | clobbering risk | per-session locks + write guard |
+**Good fit** — a shared `CLAUDE.md` across several people or parallel sessions · a client-facing project where *"what did the AI make up?"* must have a real answer · a workflow where you want to know exactly what was kept and what was dropped.
 
-"A hook that writes files" is not a moat — many exist. DS-ReCall's edge is **discipline**: status tags (✅ / ⚠️ / ⛔ / ❓) + one-fact-one-file + brain-model consolidation + session-aware concurrency.
-
-### Where this fits next to the other memory plugins
-
-Claude Code's memory space is genuinely crowded now — the built-in auto-memory (`MEMORY.md`, shipped since Claude Code v2.1.59), Anthropic's own official **Remember** plugin, and community tools like **claude-mem** and **memsearch** all solve "automatic, zero-friction recall" well, some at real scale (claude-mem has tens of thousands of GitHub stars at time of writing). DS-ReCall does not compete on that axis and won't pretend to.
-
-|  | Auto-compression (Remember, claude-mem) | DS-ReCall |
-|---|---|---|
-| Curation | AI summarizes/compresses for you | you (or Claude, explicitly, at `/wrap`) decide what's canon |
-| Cost/latency per session | a model call (Remember: <$0.01/session; similar order for others) | **zero** — hooks are plain Node.js, no model call, ever |
-| Failure mode when memory grows too big | commonly reported as **silent** truncation of the oldest entries — nothing tells you it happened | a visible size-warning (`sizeLimitLines`/`sizeLimitBytes`) at every `/ds-recall:status` and `/wrap` |
-| Multi-session / multi-person safety | not a headline feature of the tools we looked at | per-session locks + a commit-gate that **blocks `git commit` while integrity is failing** |
-| Setup cost | zero (fully automatic) | one explicit step per session (`/ds-recall:wrap`) — this is real, deliberate friction, not an oversight |
-
-**Honest bottom line:** if you want memory that just works with zero thought, the automatic tools are more mature and you should use them. DS-ReCall is for the case where you (or your team) specifically don't want an AI silently deciding what to remember and what to drop — a shared `CLAUDE.md` across multiple people/sessions, a client-facing project where "what did the AI make up" has to have a real answer, or a workflow where you'd rather know exactly what got dropped than have it happen invisibly. The `/wrap` step is the price of that — we're not hiding it.
-
-## How it works
-
-DS-ReCall doesn't reinvent storage — Claude Code already loads `CLAUDE.md` and `.claude/rules/` natively every session. DS-ReCall switches off the *uncurated* auto-memory and curates that native layer instead:
-
-| Layer | Native home |
-|---|---|
-| Lean index | `CLAUDE.md` (loaded in full every session) |
-| Durable rules | `.claude/rules/*.md` |
-| Episodic detail | `docs/` + session logs |
-| Uncurated auto-memory | **OFF** |
-
-## Four building blocks
-
-1. **Capture** — `SessionStart` opens a per-session stub (`docs/sessions/<date>-<id>.md`, one per session id — resuming reuses it), writes an `⚪ OPEN` line to `SESSIONS_INDEX.md`, sweeps stubs abandoned by sessions that died without `SessionEnd`, and nudges you only if an *earlier* session **holds real work** and hasn't been wrapped. `SessionEnd` backs up the transcript, rotates old backups, and then decides what the session actually was: empty → the stub and its index line are **retracted**; has content → `closed:` stamp and the line is promoted to `🟡 RAW`. It also injects the current system clock (anti date-hallucination) and warns if auto-memory isn't disabled.
-2. **Consolidate** — `/ds-recall:wrap`: melt the session into the canon (decisions → log, index refresh, rules → `.claude/rules/`), status-tagged. Its mechanical half runs as `wrap-prep.js` so the model never has to read the big index files just to edit one line.
-3. **Validate (Moat-1)** — integrity check: broken-link / orphan / unindexed-session / size. A `PreToolUse` **commit-gate** runs it automatically on every `git commit` and **blocks the commit while integrity is FAIL** — so consistency depends on the system, not on you remembering `/wrap` (bypass once with `gateCommit:false`).
-4. **Concurrency (Moat-2)** — per-session locks + a `PreToolUse` guard that blocks clobbering writes to shared canon while other sessions are live. Stale locks expire on a TTL and are swept at the next `SessionStart`. **Caveat:** the guard hooks the `Write`/`Edit` tools; it does not (and cannot, in general) intercept arbitrary `Bash` redirects into a protected file (e.g. `echo x >> CLAUDE.md`). Treat it as a strong guard against accidental clobbering, not a hard sandbox against a deliberately adversarial agent.
-5. **Visualize** — `/ds-recall:graph` turns `SESSIONS_INDEX.md` into a zero-config Canvas 2D graph: sessions cluster into planets by their `[Project - Topic - Vol N]` filing tag, and every still-unconsolidated session surfaces on one always-visible "Needs Wrap" hot-spot — click it to see exactly what needs `/ds-recall:wrap`. Every session is also independently hoverable/clickable, with an auto-opening quick-look card and a persistent bottom info bar; topics worked on the same calendar day connect with an animated bond (auto-derived, no curation). Optionally group topics under named projects/departments via config (`projects`, see below) — dormant ones (registered, zero sessions) still show up instead of silently vanishing. Unlike a static note-graph (e.g. Obsidian), it's color-coded by curation status, not just link structure. Self-contained HTML, no CDN, no build step; regenerate the data any time with `node scripts/build-memory-graph.js`.
+**Not a good fit** — you want memory that just works with zero thought. The automatic tools (Claude Code's own auto-memory, Anthropic's *Remember* plugin, community tools such as claude-mem) are more mature at that, and DS-ReCall does not compete on that axis. The `/ds-recall:wrap` step is the price of curation; it is deliberate friction, not an oversight.
 
 ## Install
 
-1. Load the plugin. Local dev: `claude --plugin-dir ./ds-recall` (validate with `claude plugin validate ./ds-recall`).
-2. Turn off built-in auto-memory: `"autoMemoryEnabled": false` in your project `.claude/settings.json` (or env `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`). If you forget, `SessionStart` re-checks this every session and injects a visible warning until it's off — you won't silently run both memory layers at once.
-3. Copy templates into your project:
-   - `templates/CLAUDE.md` → `./CLAUDE.md`
-   - `templates/DECISIONS.md` → `./docs/DECISIONS.md`
-   - `templates/ds-recall.config.json` → `./.claude/ds-recall.config.json`
-   - `templates/rule-example.md` → `./.claude/rules/<topic>.md`
-   - `scripts/validate.js` → `./.claude/scripts/validate.js` (so `/ds-recall:wrap` can run the integrity gate; command bodies don't expand `${CLAUDE_PLUGIN_ROOT}`)
-   - `scripts/wrap-prep.js` **and** `scripts/session-lib.js` → `./.claude/scripts/` (0.2+ — `/ds-recall:wrap` step 0 calls it; it requires `session-lib.js` from the same folder)
-4. Add `.claude/active/`, `.claude/backups/`, and `_memory-graph/` to your `.gitignore` (the graph is regenerated on demand; `graph.html` is a static copy, not worth diffing).
-5. **Verify the install actually works** (0.2+) — the suites run in a throwaway temp workspace and touch nothing of yours:
-   ```bash
-   node scripts/selftest.js            # 59 cases, prints coverage per group
-   node scripts/selftest-negative.js   # injects real defects, proves the suite goes red
-   ```
+**Recommended — per project**, so only repositories that opt in get the hooks (Claude Code 2.1.275 or later):
+
+```bash
+claude plugin install ds-recall --marketplace toresoysal/ds-recall --scope project
+```
+
+Inside a Claude Code session the equivalent is `/plugin install ds-recall --marketplace toresoysal/ds-recall`. Leave out `--scope project` to install for your user account — the hooks then run in **every** project you open (see [guide §2](docs/USER-GUIDE.md#2-install)).
+
+**Try it without installing** (any Claude Code version): `git clone https://github.com/toresoysal/ds-recall` and start Claude Code with `claude --plugin-dir ./ds-recall`.
+
+Installing is the easy half. Each project also needs a **one-time setup** (copy three templates and three scripts, turn built-in auto-memory off, add a few `.gitignore` lines) — about five minutes, copy-paste blocks for macOS/Linux and Windows are in **[the user guide §3](docs/USER-GUIDE.md#3-set-up-a-project-once)**.
+
+> ⚠️ **Heads-up before you enable it on an existing repo:** the commit-gate is **on by default**. If the repo has a `docs/` folder that your `CLAUDE.md` does not link to, DS-ReCall sees *orphaned* notes and **blocks `git commit`** until you link them or set `"gateCommit": false`. Measured, not hypothetical — see [troubleshooting](docs/TROUBLESHOOTING.md#my-git-commit-is-blocked).
+
+## The daily loop
+
+1. **Start a session.** `SessionStart` opens a stub for it, injects the real system clock (anti date-hallucination), warns if auto-memory is still on, and tells you if an *earlier* session holds real work that was never wrapped.
+2. **Work normally.**
+3. **Before you leave, run `/ds-recall:wrap`.** Decisions go to the decision log, the index is refreshed, durable rules go to `.claude/rules/`, the session is marked consolidated, integrity is re-checked, and you get a visible `SEALED` / `NOT SEALED` verdict.
+4. **Forgot?** The session still ends safely (transcript backed up, lock released) and the next session tells you what is owed.
+
+## Five building blocks
+
+| | Block | What it does |
+|---|---|---|
+| 1 | **Capture** | `SessionStart` / `SessionEnd` hooks: per-session stub, lock, `⚪ OPEN → 🟡 RAW → ✅ CONSOLIDATED` status machine, clock injection, auto-memory check, garbage-collection of empty stubs, lossless transcript-backup rotation. |
+| 2 | **Consolidate** | `/ds-recall:wrap`. Its mechanical half runs as `wrap-prep.js`, so the model never reads the big index files just to edit one line. |
+| 3 | **Validate** (Moat-1) | `validate.js` + a `PreToolUse` **commit-gate** that blocks `git commit` while integrity is FAIL. |
+| 4 | **Concurrency** (Moat-2) | Per-session locks + a `PreToolUse` **lock-guard** that blocks `Write`/`Edit` to shared canon files while another live session holds a lock. *Not* a sandbox — see [limits](#limits-stated-up-front). |
+| 5 | **Visualize** | `/ds-recall:graph` — a zero-config, self-contained Canvas 2D map of your sessions: planets per topic, a red "Needs Wrap" hot-spot, same-day bonds. No CDN, no build step. |
 
 ## Commands
 
-- `/ds-recall:wrap` — consolidate the current session before you exit.
-- `/ds-recall:status` — memory health at a glance (auto-memory state, active/RAW sessions, integrity, index size, last milestone). Read-only.
-- `/ds-recall:graph` — visualize sessions as an interactive graph, clustered by topic tag, with a one-click "Needs Wrap" hot-spot.
+| Command | Purpose |
+|---|---|
+| `/ds-recall:wrap` | Consolidate the current session before you exit. |
+| `/ds-recall:status` | Memory health at a glance — auto-memory state, live locks, sessions owed a wrap, integrity, index size, last milestone. Read-only. |
+| `/ds-recall:graph` | Open the interactive session graph. |
 
-## Config — `.claude/ds-recall.config.json`
+Helper scripts (run with `node`): `validate.js` (integrity), `wrap-prep.js` (the deterministic half of wrap), `cleanup.js` (one-time backlog cleanup), `build-memory-graph.js`, and the test suites `selftest.js` / `selftest-negative.js`.
 
-| Key | Meaning | Default |
-|---|---|---|
-| `indexes` | files scanned as the reference source | `["CLAUDE.md"]` |
-| `tracked` | dirs scanned for orphan files | `["docs"]` |
-| `protected` | files the write-guard locks | `["CLAUDE.md","DECISIONS.md","SESSIONS_INDEX.md"]` |
-| `sizeLimitLines` / `sizeLimitBytes` | index size warning | `200` / `25600` |
-| `sessionsIndex` | session-coverage reference (UNINDEXED check) | `.claude/SESSIONS_INDEX.md` |
-| `staleLockHours` | dead-lock expiry + `SessionStart` GC | `12` |
-| `gateCommit` | block `git commit` while integrity is FAIL | `true` |
-| `projects` | optional: roll topic tags up under named projects for `/ds-recall:graph` (see below) | `[]` |
-| **`gcEmptyStubs`** | collect stubs abandoned by sessions that died without `SessionEnd` | `true` |
-| **`backupCompressDays`** | gzip transcript backups older than N days (`0` = off) | `14` |
-| **`backupCompressPerRun`** | cap per hook run, so a big backlog can't stall `SessionEnd` | `5` |
-| **`backupDeleteDays`** | hard-delete `.gz` older than N days. **`0` = never delete** — the default is lossless | `0` |
-| **`maxIndexLineChars`** | truncate `--flip --summary`; keeps the machine index status-only (`0` = no limit) | `0` |
-| **`neverTouch`** | extra filename patterns `cleanup.js` must refuse (your vault/secret dirs) — added on top of the built-in `.env`/`token`/`secret`/`credential`/`.pem`/`.key` floor | `[]` |
-| **`evict`** | mechanical root-index line cap: `{file, linePattern, maxLines, targetFile, targetAnchor}` | see CHANGELOG |
+## Documentation
 
-### Grouping topics into projects (optional, for `/ds-recall:graph`)
+| | |
+|---|---|
+| **[User guide](docs/USER-GUIDE.md)** | install, project setup, the daily loop, status model, guards, nested workspaces, maintenance, upgrade, uninstall, cost & privacy |
+| **[Configuration reference](docs/CONFIGURATION.md)** | every `.claude/ds-recall.config.json` key, its default and what reads it |
+| **[Troubleshooting](docs/TROUBLESHOOTING.md)** | symptom → cause → fix |
+| **[Changelog](CHANGELOG.md)** | what changed, with the measurements behind each fix |
 
-By default the memory graph makes one planet per `[Project - Topic - Vol N]` tag — works zero-config for any install. If your work spans real sub-projects or departments that don't map 1:1 onto topic tags (a marketing department that shows up in the index as `LinkedIn`, `Pazarlama`, `Web Tasarım`...), define `projects` to merge them and to surface departments that exist but haven't accumulated any sessions yet (shown dim/"registered, no activity yet" instead of silently missing):
+## How it compares
 
-```json
-"projects": [
-  { "id": "Marketing", "match": ["Pazarlama", "LinkedIn", "Web Tasarım"] },
-  { "id": "Corporate Identity", "match": ["Kurumsal"], "note": "brand/identity work — dormant until a session tags it" }
-]
+|  | Claude Code's built-in auto-memory | Auto-compression plugins (Remember, claude-mem, …) | DS-ReCall |
+|---|---|---|---|
+| Who curates | Claude decides what to save | an AI summarises for you | you — or Claude, explicitly, at `/wrap` |
+| Cost per session | loads the first 200 lines / 25 KB of `MEMORY.md` | usually a model call per session | **zero** model calls from hooks; ~158 tokens always-on (Claude Code's own estimate, `claude plugin details ds-recall`), ~2.2k tokens when `/wrap` runs — plus whatever your own `CLAUDE.md` and rules weigh |
+| When memory outgrows its limit | an explicit error since Claude Code 2.1.210 (earlier: silent truncation) | varies by tool | a visible size warning at `/ds-recall:status` and `/wrap` |
+| Multi-session safety | not a headline feature | not a headline feature of the tools we looked at | per-session locks + commit-gate |
+| Search over past sessions | recall of what it saved | usually yes (semantic / full-text) | **none** — the index plus `grep` |
+| Setup | none | install | install **plus** a one-time per-project setup and one explicit step per session |
+
+The built-in auto-memory was the reference point when this project started; it has since stopped truncating silently, so the remaining difference is **curation, not visibility**.
+
+In our own review (September 2026) the tools closest to DS-ReCall in philosophy were [engram](https://github.com/Gentleman-Programming/engram) (local, no LLM calls, deliberate saves, full-text search) and [total-recall](https://github.com/davegoldblatt/total-recall) (markdown, write gates, human promotion). We have not benchmarked them against DS-ReCall; read their READMEs and pick what fits.
+
+## Limits, stated up front
+
+- **No retrieval layer.** There is no semantic or full-text search over past sessions. Recall is the index plus `grep`. This is the largest capability gap against the tools above.
+- **The `/wrap` step relies on discipline.** The mechanical half is deterministic; the judgement half (what was decided, what is a rule) is done by the model and is only as good as the session.
+- **The lock-guard is a guard against accidents, not a sandbox.** It hooks the `Write` and `Edit` tools; it does not intercept arbitrary shell redirects such as `echo x >> CLAUDE.md`.
+- **The commit-gate is on by default** (see the heads-up above).
+- **Project-local script copies do not auto-update.** `/wrap` and `/status` run the copies you placed in `.claude/scripts/`; re-copy them after upgrading the plugin ([guide §12](docs/USER-GUIDE.md#12-upgrade-and-uninstall)).
+- **Tested mainly on one Windows workspace and one Node version** (v22). Cross-platform by construction (plain Node, Unicode- and space-safe paths), but field reports from macOS and Linux are what this project needs.
+
+## Verify your install
+
+The suites run in a throwaway temp workspace and touch nothing of yours:
+
+```bash
+node scripts/selftest.js            # 59 cases, prints coverage per group
+node scripts/selftest-negative.js   # injects real defects, proves the suite goes red
 ```
-Any topic not listed in a `match` array still gets its own planet exactly as before — this is additive enrichment, never required.
 
-### Avoiding false orphans (sub-indexes)
-
-The validator flags a tracked `.md` as `ORPHAN` only if no `indexes` file references it. For a folder of peer docs (e.g. `docs/research/01…09.md`), don't bloat `CLAUDE.md` with nine links — point it at a **sub-index** and list that in `indexes`:
-
-```json
-"indexes": ["CLAUDE.md", "docs/research/README.md"]
-```
-
-References resolve relative to each index's own folder, so the sub-index's links cover everything under it. Hierarchical index, lean root, zero false orphans.
-
-## Status
-
-**v0.1 — core built and unit-tested** (validation, session lifecycle, consolidation, concurrency). Cross-platform (Node), Unicode-path safe. Real-hook integration tests in progress. Not yet published; dogfooding first.
+Expected: `RESULT: OK` from both. The negative harness additionally prints one guard as `NOT EXERCISED` with its reason — that is intentional and declared up front, not a failure.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
