@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * DS-ReCall — v0.2 self-test
+ * DS-ReCall — v0.3 self-test
  *
  * This file exists because of a rule learned the hard way on this workspace:
  *   "A gate that lights green without measuring anything is worse than no gate."
@@ -411,9 +411,312 @@ function testEndToEnd() {
   rmrf(root);
 }
 
+/* ========================= 9. COMMIT-GATE MODES ============================= */
+
+function testCommitGate() {
+  console.log('\n9. COMMIT-GATE MODES  (0.3: default WARN — a gate that blocks a new user\'s first commit is a bad first impression)');
+  const { execFileSync } = require('child_process');
+  const gateJs = path.join(__dirname, 'commit-gate.js');
+  const root = mkWorkspace('gate');
+  fs.mkdirSync(path.join(root, 'docs'), { recursive: true });
+  const cfgPath = path.join(root, '.claude', 'ds-recall.config.json');
+  const baseCfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+  const setGate = (v, omit) => { const c = Object.assign({}, baseCfg); if (!omit) c.gateCommit = v; fs.writeFileSync(cfgPath, JSON.stringify(c)); };
+  const lonely = path.join(root, 'docs', 'lonely.md');
+  const run = (command) => {
+    const out = execFileSync(process.execPath, [gateJs], {
+      input: JSON.stringify({ cwd: root, tool_name: 'Bash', tool_input: { command } }),
+      encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe']
+    });
+    try { return JSON.parse(out); } catch (_) { return { _unparsable: out }; }
+  };
+  const COMMIT = 'git commit -m "x"';
+  const hso = o => o.hookSpecificOutput || {};
+  const denied = o => hso(o).permissionDecision === 'deny';
+  const warned = o => typeof o.systemMessage === 'string' && /NOT blocked/.test(o.systemMessage);
+  const silent = o => Object.keys(o).length === 0;
+  const before = CASES;
+
+  // ---- workspace with one ORPHAN (a note no index references): integrity FAIL
+  fs.writeFileSync(lonely, '# a note that no index file references\n');
+
+  setGate(null, true);                                   // key absent
+  let o = run(COMMIT);
+  ok('gate', 'default (key absent) WARNS on an orphan', warned(o), JSON.stringify(o).slice(0, 140));
+  ok('gate', 'default does NOT block the commit', !denied(o));
+  ok('gate', 'warn output carries NO permissionDecision ("allow" would skip the user\'s own permission prompt)',
+    !('permissionDecision' in hso(o)), JSON.stringify(hso(o)));
+  ok('gate', 'warn reaches Claude too (additionalContext) and states the count',
+    /1 orphan/.test(hso(o).additionalContext || ''), String(hso(o).additionalContext).slice(0, 100));
+  ok('gate', 'warn tells the user how to turn blocking on',
+    /"gateCommit": "block"/.test(o.systemMessage || ''));
+
+  setGate('warn');            ok('gate', '"warn" warns and does not block', warned(run(COMMIT)) && !denied(run(COMMIT)));
+  setGate(true);              ok('gate', 'true still BLOCKS (0.1/0.2 configs keep their behaviour)', denied(run(COMMIT)));
+  setGate('block');           ok('gate', '"block" BLOCKS', denied(run(COMMIT)));
+  setGate('BLOCK');           ok('gate', '"BLOCK" (any case) BLOCKS', denied(run(COMMIT)));
+  setGate(false);             ok('gate', 'false is a full bypass', silent(run(COMMIT)), JSON.stringify(run(COMMIT)));
+  setGate('off');             ok('gate', '"off" is a full bypass', silent(run(COMMIT)));
+
+  setGate('blok');            // NEGATIVE: a typo is neither a silent off nor a silent block
+  o = run(COMMIT);
+  ok('gate', 'NEGATIVE: an unrecognised value (typo "blok") falls to WARN, not to off',
+    warned(o) && !denied(o) && !silent(o), JSON.stringify(o).slice(0, 100));
+  ok('gate', 'NEGATIVE: the warning says the value was not recognised', /not recognised/.test(o.systemMessage || ''));
+
+  fs.writeFileSync(cfgPath, '{ this is not json');       // malformed config must not decide anything
+  o = run(COMMIT);
+  ok('gate', 'NEGATIVE: a malformed config file falls back to WARN (never a silent block, never silent off)',
+    warned(o) && !denied(o), JSON.stringify(o).slice(0, 100));
+
+  // ---- a non-commit command is never touched, even in block mode with integrity FAIL
+  setGate(true);
+  ok('gate', 'NEGATIVE: "git status" is untouched in block mode', silent(run('git status')));
+  ok('gate', 'NEGATIVE: an unrelated command is untouched in block mode', silent(run('ls -la')));
+
+  // ---- clean workspace: no noise in ANY mode
+  fs.unlinkSync(lonely);
+  const clean = [['absent', null, true], ['"warn"', 'warn'], ['true', true], ['"block"', 'block']];
+  clean.forEach(([label, v, omit]) => { setGate(v, omit); ok('gate', 'clean workspace is silent with gateCommit ' + label, silent(run(COMMIT)), JSON.stringify(run(COMMIT))); });
+
+  console.log(`   coverage: ${CASES - before} cases · 8 gateCommit values (absent, "warn", true, "block", "BLOCK", false, "off", typo) + malformed file · orphan vs clean workspace · commit vs non-commit commands`);
+  rmrf(root);
+}
+
+/* ============================ 10. INIT / UPGRADE ============================ */
+
+function testInit() {
+  console.log('\n10. INIT / UPGRADE  (0.3: one command · never overwrites · never silent · a dry run writes nothing)');
+  const { spawnSync } = require('child_process');
+  const V = require('./validate.js');
+  const initJs = path.join(__dirname, 'init.js');
+  const PLUGIN = path.resolve(__dirname, '..');
+  const before = CASES;
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'dsrecall-init-'));
+  const mk = (name) => { const d = path.join(base, name); fs.mkdirSync(d, { recursive: true }); return d; };
+  const init = (dir, flags, js) => {
+    const r = spawnSync(process.execPath, [js || initJs, dir].concat(flags || []), { encoding: 'utf8' });
+    return { code: r.status, out: (r.stdout || '') + (r.stderr || '') };
+  };
+  const rd = (d, rel) => fs.readFileSync(path.join(d, rel));
+  const has = (d, rel) => fs.existsSync(path.join(d, rel));
+  const wr = (d, rel, text) => { fs.mkdirSync(path.dirname(path.join(d, rel)), { recursive: true }); fs.writeFileSync(path.join(d, rel), text); };
+  const src = rel => fs.readFileSync(path.join(PLUGIN, rel));
+  const files = (d) => { const out = []; (function walk(x) { for (const f of fs.readdirSync(x)) { const p = path.join(x, f); fs.statSync(p).isDirectory() ? walk(p) : out.push(path.relative(d, p).replace(/\\/g, '/')); } })(d); return out.sort(); };
+  const snapshot = (d) => { const m = {}; files(d).forEach(f => { m[f] = rd(d, f).toString('hex'); }); return JSON.stringify(m); };
+  const times = (text, line) => text.split(/\r?\n/).filter(l => l.trim() === line).length;
+  const GI = ['.claude/active/', '.claude/backups/', '.claude/.index.lock', '_memory-graph/'];
+  const GI_HEADER_PROBE = '# DS-ReCall runtime (backups hold full session transcripts - never commit them)';
+  const TPL =[['templates/CLAUDE.md', 'CLAUDE.md'], ['templates/DECISIONS.md', 'docs/DECISIONS.md'],
+    ['templates/TIMELINE.md', 'docs/TIMELINE.md'], ['templates/ds-recall.config.json', '.claude/ds-recall.config.json']];
+  const SCR = ['validate.js', 'wrap-prep.js', 'session-lib.js'].map(f => ['scripts/' + f, '.claude/scripts/' + f]);
+
+  /* A — fresh project, path WITH A SPACE */
+  const A = mk('my proj');
+  let r = init(A);
+  ok('init', 'fresh setup exits 0 and reports RESULT: OK', r.code === 0 && /RESULT: OK/.test(r.out), r.out.slice(-120));
+  TPL.concat(SCR).forEach(([s, d]) => ok('init', 'fresh: ' + d + ' is byte-equal to the plugin copy', has(A, d) && rd(A, d).equals(src(s))));
+  const gi = rd(A, '.gitignore').toString('utf8');
+  ok('init', 'fresh: every .gitignore runtime line is present exactly once', GI.every(l => times(gi, l) === 1), gi);
+  const integ = V.computeIntegrity(A);
+  ok('init', 'fresh: the new project passes integrity (0 broken, 0 orphan)', integ.broken.length === 0 && integ.orphans.length === 0,
+    JSON.stringify({ b: integ.broken, o: integ.orphans }));
+
+  /* B — second run is a no-op */
+  const snapA = snapshot(A);
+  r = init(A);
+  ok('init', 'second run changes NOTHING (idempotent)', snapshot(A) === snapA);
+  ok('init', 'second run creates 0 files and says so', /\b0 created\b/.test(r.out), r.out);
+  ok('init', 'second run: .gitignore lines still appear exactly once', (() => { const g = rd(A, '.gitignore').toString('utf8'); return GI.every(l => times(g, l) === 1); })());
+
+  /* C — an existing project must come through untouched */
+  const C = mk('existing');
+  wr(C, 'CLAUDE.md', '# MY INDEX\r\nmine\r\n');
+  wr(C, 'docs/DECISIONS.md', 'my decisions\n');
+  wr(C, '.claude/ds-recall.config.json', '{"gateCommit":"block"}');
+  wr(C, '.gitignore', 'node_modules/\r\nlogs');                    // CRLF, and NO trailing newline
+  const keep = { c: rd(C, 'CLAUDE.md'), d: rd(C, 'docs/DECISIONS.md'), cfg: rd(C, '.claude/ds-recall.config.json') };
+  r = init(C);
+  ok('init', 'NEGATIVE: an existing CLAUDE.md is NOT overwritten', rd(C, 'CLAUDE.md').equals(keep.c));
+  ok('init', 'NEGATIVE: an existing docs/DECISIONS.md is NOT overwritten', rd(C, 'docs/DECISIONS.md').equals(keep.d));
+  ok('init', 'NEGATIVE: an existing config is NOT overwritten', rd(C, '.claude/ds-recall.config.json').equals(keep.cfg));
+  ok('init', 'what was missing was created (docs/TIMELINE.md, the three scripts)', has(C, 'docs/TIMELINE.md') && SCR.every(([, d]) => has(C, d)));
+  const giC = rd(C, '.gitignore').toString('utf8');
+  ok('init', 'NEGATIVE: .gitignore keeps the original text as its prefix', giC.startsWith('node_modules/\r\nlogs'), JSON.stringify(giC.slice(0, 40)));
+  ok('init', 'NEGATIVE: appended .gitignore lines use the file\'s own CRLF (no bare LF)', !/(^|[^\r])\n/.test(giC), JSON.stringify(giC));
+  ok('init', 'a no-trailing-newline .gitignore is not glued to the first new line', times(giC, 'logs') === 1 && times(giC, GI_HEADER_PROBE) === 1, JSON.stringify(giC));
+  ok('init', 'existing CLAUDE.md that does not mention the new timeline: reported as an ORPHAN risk', /ORPHAN risk/.test(r.out) && V.computeIntegrity(C).orphans.indexOf('docs/TIMELINE.md') !== -1, r.out.slice(0, 200));
+  ok('init', 'NEGATIVE: without --append-pointers CLAUDE.md stays untouched', rd(C, 'CLAUDE.md').equals(keep.c));
+
+  /* G — pointers, only behind the flag, only once, only for files WE created */
+  const G = mk('pointers');
+  wr(G, 'CLAUDE.md', '# idx\nmine\n');
+  r = init(G, ['--append-pointers']);
+  let gt = rd(G, 'CLAUDE.md').toString('utf8');
+  ok('init', '--append-pointers appends the two pointer lines', /docs\/DECISIONS\.md/.test(gt) && /docs\/TIMELINE\.md/.test(gt) && gt.startsWith('# idx\nmine\n'), JSON.stringify(gt));
+  ok('init', 'after --append-pointers the project has 0 orphans', V.computeIntegrity(G).orphans.length === 0);
+  const snapG = snapshot(G);
+  init(G, ['--append-pointers']);
+  ok('init', 'NEGATIVE: re-running with --append-pointers appends nothing again', snapshot(G) === snapG);
+  const G2 = mk('mentioned');
+  wr(G2, 'CLAUDE.md', '# idx\nplanned: docs/TIMELINE.md and docs/DECISIONS.md\n');
+  const g2before = rd(G2, 'CLAUDE.md');
+  init(G2, ['--append-pointers']);
+  ok('init', 'NEGATIVE: a CLAUDE.md that already mentions the paths gets no duplicate pointers', rd(G2, 'CLAUDE.md').equals(g2before));
+
+  /* D — dry run writes nothing */
+  const D = mk('dry');
+  r = init(D, ['--dry-run']);
+  ok('init', 'NEGATIVE: --dry-run on a fresh folder writes ZERO files', files(D).length === 0, JSON.stringify(files(D)));
+  ok('init', '--dry-run says what it would do and exits 0', /would create/.test(r.out) && /RESULT: DRY-RUN/.test(r.out) && r.code === 0, r.out.slice(0, 160));
+  const snapC = snapshot(C);
+  init(C, ['--dry-run', '--append-pointers', '--disable-auto-memory']);
+  ok('init', 'NEGATIVE: --dry-run with every write flag still changes nothing in an existing project', snapshot(C) === snapC);
+  // `C` above is already set up by now (its .gitignore lines and TIMELINE exist), so a dry run has nothing
+  // left to append there and could not expose a defect in the append path — the negative harness found
+  // exactly that blind spot. This project still NEEDS everything: .gitignore lines, pointers, settings.
+  const D2 = mk('dry-needs-everything');
+  wr(D2, 'CLAUDE.md', '# mine\r\n');
+  wr(D2, '.gitignore', 'node_modules/\r\n');
+  const snapD2 = snapshot(D2);
+  r = init(D2, ['--dry-run', '--append-pointers', '--disable-auto-memory']);
+  ok('init', 'NEGATIVE: --dry-run on a project that still needs everything writes NOTHING (.gitignore append, CLAUDE.md pointers, settings)',
+    snapshot(D2) === snapD2 && files(D2).length === 2, JSON.stringify(files(D2)));
+  ok('init', 'and that dry run did SEE the appends it declined to do (the append path was exercised)',
+    /would append\s+\.gitignore/.test(r.out) && /would append\s+CLAUDE\.md/.test(r.out) && /would create\s+\.claude\/settings\.json/.test(r.out), r.out.slice(0, 400));
+
+  /* E — upgrade touches the three scripts and NOTHING else */
+  wr(A, '.claude/scripts/validate.js', 'broken');
+  fs.unlinkSync(path.join(A, '.claude/scripts/wrap-prep.js'));
+  wr(A, '.claude/scripts/mine.js', 'mine');
+  wr(A, 'CLAUDE.md', '# edited by a human\n');
+  const others = { claude: rd(A, 'CLAUDE.md'), cfg: rd(A, '.claude/ds-recall.config.json'), gi: rd(A, '.gitignore'), decisions: rd(A, 'docs/DECISIONS.md') };
+  r = init(A, ['--upgrade']);
+  ok('init', 'upgrade restores a corrupted script to the plugin copy', rd(A, '.claude/scripts/validate.js').equals(src('scripts/validate.js')));
+  ok('init', 'upgrade re-creates a missing script', has(A, '.claude/scripts/wrap-prep.js') && rd(A, '.claude/scripts/wrap-prep.js').equals(src('scripts/wrap-prep.js')));
+  ok('init', 'NEGATIVE: upgrade leaves a user file in .claude/scripts alone', rd(A, '.claude/scripts/mine.js').toString() === 'mine');
+  ok('init', 'NEGATIVE: upgrade does not touch CLAUDE.md', rd(A, 'CLAUDE.md').equals(others.claude));
+  ok('init', 'NEGATIVE: upgrade does not touch the config, .gitignore or the decision log',
+    rd(A, '.claude/ds-recall.config.json').equals(others.cfg) && rd(A, '.gitignore').equals(others.gi) && rd(A, 'docs/DECISIONS.md').equals(others.decisions));
+  ok('init', 'upgrade reports old -> new for what it changed', /updated/.test(r.out) && / -> /.test(r.out), r.out.slice(0, 300));
+  const snapUp = snapshot(A);
+  r = init(A, ['--upgrade']);
+  ok('init', 'a second upgrade changes nothing', snapshot(A) === snapUp && /\b0 changed\b/.test(r.out), r.out);
+  wr(A, '.claude/scripts/validate.js', 'broken again');
+  init(A, ['--upgrade', '--dry-run']);
+  ok('init', 'NEGATIVE: --upgrade --dry-run leaves the corrupted script as it was', rd(A, '.claude/scripts/validate.js').toString() === 'broken again');
+
+  /* H — refuse to set up the plugin folder itself */
+  const FP = mk('fakeplugin');                                    // a copy of the plugin layout, so a defect cannot litter the real one
+  ['init.js', 'validate.js', 'wrap-prep.js', 'session-lib.js'].forEach(f => wr(FP, 'scripts/' + f, fs.readFileSync(path.join(__dirname, f), 'utf8')));
+  TPL.forEach(([s]) => wr(FP, s, src(s).toString('utf8')));
+  wr(FP, '.claude-plugin/plugin.json', '{"name":"ds-recall","version":"0.0.0"}');
+  const fpBefore = snapshot(FP);
+  r = init(FP, [], path.join(FP, 'scripts', 'init.js'));
+  ok('init', 'NEGATIVE: refuses to set up the plugin folder itself (exit 1, RESULT: REFUSED)', r.code === 1 && /RESULT: REFUSED/.test(r.out), r.out.slice(0, 120));
+  fs.mkdirSync(path.join(FP, 'sub'));
+  const fpBefore2 = snapshot(FP);
+  r = init(path.join(FP, 'sub'), [], path.join(FP, 'scripts', 'init.js'));
+  ok('init', 'NEGATIVE: refuses a folder INSIDE the plugin folder', r.code === 1 && snapshot(FP) === fpBefore2, r.out.slice(0, 120));
+  ok('init', 'NEGATIVE: the plugin folder was left exactly as it was', fpBefore === fpBefore2);
+  const CL = mk('clone');
+  wr(CL, '.claude-plugin/plugin.json', '{"name":"ds-recall"}');
+  r = init(CL);
+  ok('init', 'NEGATIVE: refuses a clone of the plugin repo (plugin.json says ds-recall)', r.code === 1 && files(CL).length === 1, JSON.stringify(files(CL)));
+  const missing = path.join(base, 'does-not-exist');
+  r = init(missing);
+  ok('init', 'NEGATIVE: a project folder that does not exist is refused, and not created', r.code === 1 && !fs.existsSync(missing), r.out.slice(0, 100));
+  const T = mk('typo');
+  r = init(T, ['--force']);
+  ok('init', 'NEGATIVE: an unknown option is refused (a typo must not run a half-meant command)', r.code === 1 && files(T).length === 0, r.out.slice(0, 100));
+
+  /* J — auto-memory is NEVER switched off silently */
+  const J = mk('memory');
+  wr(J, '.claude/settings.json', '{"theme":"dark","autoMemoryEnabled":true}');
+  const jBefore = rd(J, '.claude/settings.json');
+  r = init(J);
+  ok('init', 'NEGATIVE: without --disable-auto-memory settings.json is left byte-identical', rd(J, '.claude/settings.json').equals(jBefore));
+  ok('init', 'and it says plainly that auto-memory is STILL ON', /STILL ON/.test(r.out), r.out.slice(-300));
+  r = init(J, ['--disable-auto-memory']);
+  let js = {}; try { js = JSON.parse(rd(J, '.claude/settings.json').toString()); } catch (_) {}
+  ok('init', '--disable-auto-memory sets it to false and keeps every other key', js.autoMemoryEnabled === false && js.theme === 'dark', JSON.stringify(js));
+  ok('init', '--disable-auto-memory keeps the original as settings.json.dsr-backup', has(J, '.claude/settings.json.dsr-backup') && rd(J, '.claude/settings.json.dsr-backup').equals(jBefore));
+  const K = mk('badjson');
+  wr(K, '.claude/settings.json', '{ this is not json');
+  const kBefore = rd(K, '.claude/settings.json');
+  r = init(K, ['--disable-auto-memory']);
+  ok('init', 'NEGATIVE: a settings.json that is not valid JSON is left untouched, with exit 1',
+    r.code === 1 && rd(K, '.claude/settings.json').equals(kBefore) && !has(K, '.claude/settings.json.dsr-backup'), r.out.slice(-200));
+  const M = mk('nosettings');
+  init(M, ['--disable-auto-memory']);
+  let jm = {}; try { jm = JSON.parse(rd(M, '.claude/settings.json').toString()); } catch (_) {}
+  ok('init', '--disable-auto-memory creates settings.json when there is none', jm.autoMemoryEnabled === false, JSON.stringify(jm));
+
+  r = spawnSync(process.execPath, [initJs, '--help'], { encoding: 'utf8' });
+  ok('init', '--help prints usage and exits 0', r.status === 0 && /--upgrade/.test(r.stdout));
+
+  console.log(`   coverage: ${CASES - before} cases · fresh / re-run / existing (CRLF .gitignore, no trailing newline) / pointers / dry-run / upgrade / 5 refusals / 4 auto-memory states · paths with spaces`);
+  rmrf(base);
+}
+
+/* ======================== 11. LIVE-CHECK JUDGE ============================== */
+
+function testLiveCheck() {
+  console.log('\n11. LIVE-CHECK JUDGE  (scripts/live-check-gate.js re-judges a saved Claude Code stream; the live model call itself is NOT run here)');
+  const { spawnSync, execFileSync } = require('child_process');
+  const tool = path.join(__dirname, 'live-check-gate.js');
+  const gateJs = path.join(__dirname, 'commit-gate.js');
+  const before = CASES;
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dsrecall-live-'));
+  // real gate output, from a real workspace that contains one ORPHAN
+  const gateOut = (cfg) => {
+    const root = mkWorkspace('live');
+    fs.mkdirSync(path.join(root, 'docs'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'docs', 'orphan.md'), '# nobody links this\n');
+    const cp = path.join(root, '.claude', 'ds-recall.config.json');
+    const base = JSON.parse(fs.readFileSync(cp, 'utf8'));
+    fs.writeFileSync(cp, JSON.stringify(cfg ? Object.assign({}, base, cfg) : base));
+    const out = execFileSync(process.execPath, [gateJs], { input: JSON.stringify({ cwd: root, tool_name: 'Bash', tool_input: { command: 'git commit -m x' } }), encoding: 'utf8' });
+    rmrf(root);
+    return out;
+  };
+  const warn = gateOut(null), block = gateOut({ gateCommit: 'block' });
+  const evt = o => JSON.stringify({ type: 'system', subtype: 'hook_response', hook_event: 'PreToolUse', output: o });
+  const ok0 = JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'done' });
+  let n = 0;
+  const judge = (label, outs, expect, commits, resultLine) => {
+    const f = path.join(tmp, 'f' + (n++) + '.jsonl');
+    fs.writeFileSync(f, outs.map(evt).concat(resultLine || ok0).join('\n'));
+    const r = spawnSync(process.execPath, [tool, '--parse', f, '--expect', expect, '--commits', String(commits)], { encoding: 'utf8' });
+    return { code: r.status, out: (r.stdout || '').trim() };
+  };
+
+  let j = judge('warn ok', [warn], 'warn', 2);
+  ok('live', 'accepts the right evidence: warning delivered, no decision, commit went through (exit 0)', j.code === 0, j.out);
+  j = judge('warn denied', [block], 'warn', 2);
+  ok('live', 'NEGATIVE: a hook that DENIED where a warning was expected is a FAIL (exit 1)', j.code === 1, j.out);
+  j = judge('warn allow', [warn.replace('"hookEventName":"PreToolUse"', '"hookEventName":"PreToolUse","permissionDecision":"allow"')], 'warn', 2);
+  ok('live', 'NEGATIVE: permissionDecision "allow" in warn mode is a FAIL (it would skip the permission prompt)', j.code === 1 && /allow/.test(j.out), j.out);
+  j = judge('no hook', [], 'warn', 2);
+  ok('live', 'NEGATIVE: no PreToolUse hook at all is a FAIL (plugin not loaded?)', j.code === 1, j.out);
+  j = judge('warn no commit', [warn], 'warn', 1);
+  ok('live', 'NEGATIVE: a warning but no commit is a FAIL', j.code === 1, j.out);
+  j = judge('block ok', [block], 'block', 1);
+  ok('live', 'block mode: deny + nothing committed is accepted (exit 0)', j.code === 0, j.out);
+  j = judge('block but committed', [block], 'block', 2);
+  ok('live', 'NEGATIVE: a deny that still left a commit behind is a FAIL', j.code === 1, j.out);
+  j = judge('block only warned', [warn], 'block', 1);
+  ok('live', 'NEGATIVE: block expected but the hook only warned is a FAIL', j.code === 1, j.out);
+  j = judge('not logged in', [], 'warn', 2, JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: 'Not logged in · Please run /login' }));
+  ok('live', 'NEGATIVE: "Not logged in" is UNMEASURED (exit 3) — never a pass and never a false FAIL', j.code === 3 && /UNMEASURED/.test(j.out), j.out);
+
+  console.log(`   coverage: ${CASES - before} cases · warn and block expectations × right evidence / deny / "allow" / no hook / wrong commit count / not logged in (built from the REAL gate output)`);
+  rmrf(tmp);
+}
+
 /* ================================ RUN =================================== */
 
-console.log('DS-ReCall v0.2 self-test — every check has a negative arm, every group reports coverage');
+console.log('DS-ReCall v0.3 self-test — every check has a negative arm, every group reports coverage');
 testFalseAlarm();
 testGc();
 testConcurrency();
@@ -422,6 +725,9 @@ testEvict();
 testBackups();
 testContainment();
 testEndToEnd();
+testCommitGate();
+testInit();
+testLiveCheck();
 
 console.log('\n' + '─'.repeat(72));
 console.log(`CASES ${CASES}   PASS ${PASS}   FAIL ${FAIL}`);

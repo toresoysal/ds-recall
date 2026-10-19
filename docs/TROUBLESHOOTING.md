@@ -1,10 +1,12 @@
 # Troubleshooting
 
-> Applies to **v0.2.1** · symptom → cause → fix. Where an entry says "measured", it was reproduced on a real run.
+> Applies to **v0.3.0** · symptom → cause → fix. Where an entry says "measured", it was reproduced on a real run.
 
 **Quick map** —
-[Commit blocked](#my-git-commit-is-blocked) ·
+[Commit blocked / warned](#my-git-commit-is-blocked) ·
 [Cannot find module](#cannot-find-module-claudescripts) ·
+[init.js refused](#initjs-says-result-refused) ·
+[init.js ORPHAN risk](#initjs-told-me-about-orphan-risk) ·
 [Edit denied: shared canon](#an-edit-to-claudemd-is-denied-other-sessions-hold-a-lock) ·
 [Auto-memory warning](#the-auto-memory-may-be-on-warning-will-not-go-away) ·
 [Unconsolidated work](#unconsolidated-work-n-earlier-sessions) ·
@@ -25,7 +27,9 @@
 [DS-ReCall] Commit blocked — memory integrity FAIL: 0 broken, 1 orphan, 0 unindexed session(s). …
 ```
 
-**Cause.** The commit-gate is **on by default** and found a problem. Measured: on a fresh install in a repo that has `docs/foo.md` and no `CLAUDE.md` linking to it, every `git commit` is denied with exactly this message.
+**Cause.** The commit-gate is in **strict mode** and found a problem. Since **0.3.0 the default is `"warn"`** and commits are never stopped, so you only see this if your config says `"gateCommit": "block"` (or `true`) — **or you are on 0.1/0.2**, where blocking was the default. Measured on 0.2: a fresh install in a repo that has `docs/foo.md` and no `CLAUDE.md` linking to it denied every `git commit` with exactly this message.
+
+If you see **`this commit was NOT blocked (gateCommit is "warn")`** instead, that is the default mode doing its job: the commit went through, and the same fixes below clear the warning.
 
 **Find out why:**
 
@@ -39,11 +43,27 @@ node .claude/scripts/validate.js
 | `ORPHAN  docs/x.md` | a note under a `tracked` folder that no index references | link it from `CLAUDE.md`, or from a sub-index you list in `indexes`; or move it out of `tracked`; or add its folder to `ignore` |
 | `UNINDEXED  docs/sessions/x.md` | a file in `sessionsDir` whose **file name appears nowhere** in `SESSIONS_INDEX.md` (typically a hand-written note) | add a line to `.claude/SESSIONS_INDEX.md` that contains the file name, e.g. `- S-<id8> · 2026-10-18 18:40 · ✅ CONSOLIDATED · docs/sessions/x.md`. Measured: `wrap-prep.js --flip` for such a session inserts a line **without the path**, so it does *not* clear this finding. |
 
-**Bypass.** Set `"gateCommit": false` in `.claude/ds-recall.config.json`. Size warnings never block. If the validator itself crashes the commit is allowed and a message says so (fail-open by design).
+**Change the mode** in `.claude/ds-recall.config.json`: `"gateCommit": "warn"` (commits go through with a warning) · `false` (gate off). Size warnings never trigger the gate. If the validator itself crashes the commit is allowed and a message says so (fail-open by design). A typo such as `"blok"` is treated as `"warn"` and the warning tells you the value was not recognised.
 
 ### Cannot find module `.claude/scripts/…`
 
-`/ds-recall:wrap` and `/ds-recall:status` run the **project-local** copies of `validate.js`, `wrap-prep.js` and `session-lib.js`. The one-time setup step that copies them was skipped (or you upgraded the plugin and a project has none). Copy **all three** — `wrap-prep.js` requires `session-lib.js` from the same folder — see the [user guide §3](USER-GUIDE.md#3-set-up-a-project-once).
+`/ds-recall:wrap` and `/ds-recall:status` run the **project-local** copies of `validate.js`, `wrap-prep.js` and `session-lib.js`. They are missing because the one-time setup was never run in this project (or a script was deleted). Fix it from the project root with the plugin's setup script — it creates only what is missing and never overwrites a file you have:
+
+```bash
+node ~/.claude/plugins/cache/devsoy/ds-recall/0.3.0/scripts/init.js --upgrade     # re-creates / refreshes just the three scripts
+```
+
+(Windows PowerShell: `node "$env:USERPROFILE\.claude\plugins\cache\devsoy\ds-recall\0.3.0\scripts\init.js" --upgrade`.) For a project that was never set up, run it **without** `--upgrade` — see the [user guide §3](USER-GUIDE.md#3-set-up-a-project-once).
+
+### `init.js` says `RESULT: REFUSED`
+
+It refuses on purpose, and writes nothing: the target folder is **inside the plugin folder**, is a **clone of the plugin repository** (its `.claude-plugin/plugin.json` names `ds-recall`), **does not exist** (it will not create a folder for a mistyped path), or you passed an **unknown option** (`--force` and friends do not exist). Run it from your own project's root, or pass that folder as the first argument.
+
+If it ends with `RESULT: FAIL (n error(s))`, read the `error` rows: a `.claude/settings.json` it cannot parse as JSON is reported and **left untouched**, so fix the JSON (or delete the file) and run it again.
+
+### `init.js` told me about `ORPHAN risk`
+
+You already had a `CLAUDE.md`, and `init.js` created a `docs/DECISIONS.md` or `docs/TIMELINE.md` that it does not mention. Add the two lines it printed, or re-run with `--append-pointers`. Details: [user guide §3](USER-GUIDE.md#3-set-up-a-project-once).
 
 ### An edit to `CLAUDE.md` is denied: other sessions hold a lock
 
@@ -137,7 +157,7 @@ RESULT: FAIL
 1. **Is the JSON valid?** A malformed file silently falls back to defaults in the hooks; `node .claude/scripts/validate.js` prints the parse error.
 2. **Shallow merge.** A key you set replaces the default entirely, arrays included — `"ignore": ["vault"]` drops `node_modules` and `.git`.
 3. **Contained paths.** A path that escapes the project root is rejected or falls back to its default.
-4. **A reserved key.** `statusCommand` is present in the defaults but not read by any script in 0.2.1.
+4. **A reserved key.** `statusCommand` is present in the defaults but not read by any script in 0.3.0.
 
 Every key and its default: [configuration reference](CONFIGURATION.md).
 

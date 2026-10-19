@@ -11,7 +11,8 @@
   "staleDays": 21,
   "nested": true,
   "propagateToParent": true,
-  "gateCommit": true,
+  "_gateCommit": "\"warn\" (default): git commit goes through, with a warning, while integrity fails · \"block\": the commit is blocked until integrity is clean · false: the gate is off",
+  "gateCommit": "warn",
 
   "_v02": "Added in 0.2 — see CHANGELOG.md",
   "gcEmptyStubs": true,

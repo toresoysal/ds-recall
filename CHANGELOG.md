@@ -4,6 +4,43 @@ All notable changes to DS-ReCall are documented here.
 
 ---
 
+## [0.3.0] — 2026-10-19
+
+**The commit-gate stops blocking new users by default, and setting up a project is one command.**
+
+Both changes come from re-testing our own 0.2.1 release on realistic repositories. A fresh install in a repo with a `docs/` folder that `CLAUDE.md` does not link denied **every** `git commit` (measured: `orphan=1`; with a pre-existing `CLAUDE.md` the copied templates became orphans, `orphan=2`). And the one-time setup was eight manual copy commands whose result went stale, silently, at the next plugin upgrade, because `/ds-recall:wrap` and `/ds-recall:status` run the project-local script copies.
+
+### ⚠️ Behaviour change — read this first
+
+- **`gateCommit` now defaults to `"warn"`.** A project whose config has no `gateCommit` key (or no config at all, or a config that is not valid JSON) used to have commits **blocked** while integrity failed; it now gets a **warning** and the commit goes through. **If you rely on blocking, add `"gateCommit": "block"`.** Configs that already say `"gateCommit": true` keep blocking exactly as before; `false` still switches the gate off.
+
+### Added
+
+- **Commit-gate modes** (`scripts/commit-gate.js`). `"warn"` (default): the user sees a warning (`systemMessage`) and Claude receives the same text as context (`hookSpecificOutput.additionalContext`). The hook deliberately returns **no** `permissionDecision`: Claude Code's hook documentation says `"allow"` skips the user's own permission prompt, and a warning must never auto-approve a commit. `true` / `"block"`: deny, as in 0.1 and 0.2. `false` / `"off"`: nothing. Any other value — a typo such as `"blok"` — is treated as `"warn"` **and the warning says the value was not recognised**: a typo must neither silently switch a safety check off nor silently start blocking commits. Values are case-insensitive. A clean workspace is silent in every mode; a non-commit command is never touched.
+- **`scripts/init.js`** — one command instead of eight: `node <plugin>/scripts/init.js` run in a project root creates `CLAUDE.md`, `docs/DECISIONS.md`, `docs/TIMELINE.md`, `.claude/ds-recall.config.json`, copies `validate.js` / `wrap-prep.js` / `session-lib.js` into `.claude/scripts/` and adds the runtime lines to `.gitignore`. It **never overwrites a file you have**, is idempotent, and reports what it did (`created` / `kept` / `updated` / `unchanged`). Options: `--dry-run` (writes nothing, with every other flag too), `--upgrade` (re-syncs **only** the three scripts, printing `old -> new`; nothing else is touched), `--append-pointers` (an existing `CLAUDE.md` that does not mention the new decision log / timeline gets the two lines that stop them being orphans — only for files `init.js` created, only once), `--disable-auto-memory` (merges `{"autoMemoryEnabled": false}` into `.claude/settings.json`, original kept as `settings.json.dsr-backup`; **without the flag the state is only reported — settings are never edited silently**). It refuses to run inside the plugin folder or on a clone of the plugin repository, on a folder that does not exist, and on an unknown option; a `.claude/settings.json` it cannot parse is left untouched. `.gitignore` is appended in the file's own line ending and a rule that already ignores `.claude/` counts as covering the `.claude/` lines. No dependencies, no network; paths with spaces work.
+- **`scripts/live-check-gate.js`** — proves the commit-gate against a **real, logged-in** Claude Code: it builds two throw-away repos containing one orphan note, loads the plugin with `--plugin-dir`, asks a headless `claude -p` to run `git commit`, and judges from the evidence Claude Code itself emits (`--output-format stream-json --include-hook-events`) plus the real git history: default config → the commit must go through and the hook output must say `NOT blocked`; `"block"` → the commit must be refused and nothing committed. *Status, stated plainly:* the judging logic is covered by tests built from the real gate output; **the live half has not been run by us** — a headless `claude -p` in our environment reported `Not logged in`, which the tool reports as `UNMEASURED` (exit 3), never as a pass. See *Known limitations*.
+- **Template**: `templates/ds-recall.config.json` ships `"gateCommit": "warn"` with an explanatory `_gateCommit` note.
+
+### Changed
+
+- **Self-test: 59 → 140 cases.** New groups: 9 *commit-gate modes* (20 cases), 10 *init / upgrade* (52), 11 *live-check judge* (9). Each reports its coverage.
+- **The negative harness now injects defects into more than one file** (each injection names its target file) and restores every file on exit — including after a crash or Ctrl-C — instead of only `session-lib.js`.
+- **Negative harness result: 35 injections (the 10 from 0.2 + 7 commit-gate + 15 init + 3 live-check) → 34 of 34 exercisable defects make the suite fail · 0 blind · 0 not applied · 1 declared not-exercisable** (the gzip round-trip length check, unchanged from 0.2). Run on both an LF tree and a CRLF copy of the sources.
+- Docs: README, `USER-GUIDE.md` (§3 is now the `init.js` flow, §4, §8, §12, §14), `CONFIGURATION.md`, `TROUBLESHOOTING.md` rewritten for 0.3.0. Version `0.2.1` → `0.3.0` (`plugin.json`, `marketplace.json`).
+
+### Found by our own negative harness while building this
+
+The first full run of the new arms reported `RESULT: FAIL` (29 of 31 exercisable defects caught) — and both gaps were in **our** tests, not in the code: a *dry-run* test ran on a project that was already set up, so a defect that made the dry run append to files could not show; and one injection anchor never applied because the source line carries a literal BOM character. Both were fixed (a dry-run case on a project that still needs everything, which also asserts the append path was *seen*; an anchor that does not depend on the BOM) before this release. A test that passes the first time is not evidence — that is what the harness is for.
+
+### Known limitations — documented, not changed
+
+- **The warn output has not been seen by a live Claude Code session by us** (see `live-check-gate.js` above). It follows the documented hook format.
+- **The commit-gate only warns by default**: a project that never sets `"gateCommit": "block"` is not protected from commits that fail integrity, and a warning can be ignored.
+- **Nothing reminds you to run `init.js --upgrade`** after a plugin upgrade.
+- **No retrieval** (no search over past sessions) · **wrap needs a human to ask for it** · **`cleanup.js` is not covered by the self-test suites** (and stamps annotated index lines with a fixed date) · **`SESSIONS_INDEX.md` has no automatic cap** · **`statusCommand`** is a reserved config key that nothing reads.
+
+---
+
 ## [0.2.1] — 2026-10-18
 
 **Documentation, one-line install, and a Windows fix. No hook behaviour changed.**

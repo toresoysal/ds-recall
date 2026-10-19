@@ -93,6 +93,187 @@ const INJECTIONS = [
     guards: 'a copied config with ../../ must not become an arbitrary-write primitive',
     find: '  if (resolved === rootAbs || resolved.startsWith(rootAbs + path.sep)) return resolved;\n  return path.resolve(root, fallbackRel);',
     repl: '  return resolved;'
+  },
+
+  /* ---- commit-gate modes (0.3). Each defect below is a way the new warn/block/off logic could rot. ---- */
+  {
+    file: 'commit-gate.js',
+    name: 'default mode flipped back to BLOCK',
+    guards: 'a new user\'s first commit must not be denied just because docs/ is not linked yet (the 0.3 default)',
+    find: "if (v === undefined || v === null || s === 'warn') return { mode: 'warn' };",
+    repl: "if (v === undefined || v === null || s === 'warn') return { mode: 'block' };"
+  },
+  {
+    file: 'commit-gate.js',
+    name: 'warn output carries permissionDecision "allow"',
+    guards: '"allow" skips the user\'s own permission prompt — a warning must never auto-approve a commit',
+    find: "hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: msg }",
+    repl: "hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', additionalContext: msg }"
+  },
+  {
+    file: 'commit-gate.js',
+    name: 'gateCommit:false no longer bypasses',
+    guards: 'users who turned the gate off must stay un-gated',
+    find: "if (gate.mode === 'off') return allow(); // deliberate bypass",
+    repl: "if (false) return allow(); // deliberate bypass"
+  },
+  {
+    file: 'commit-gate.js',
+    name: 'unrecognised gateCommit value switches the gate OFF',
+    guards: 'a typo must not silently disable a safety check (same lesson as the lock-guard `protected` fallback)',
+    find: "return { mode: 'warn', note:",
+    repl: "return { mode: 'off', note:"
+  },
+  {
+    file: 'commit-gate.js',
+    name: 'block mode downgraded to warn',
+    guards: 'strict mode must stay strict for everyone who opted in (0.1/0.2 configs with true)',
+    find: "if (gate.mode === 'warn') {",
+    repl: "if (true) {"
+  },
+  {
+    file: 'commit-gate.js',
+    name: 'non-commit commands are gated too',
+    guards: 'the gate must leave every command except `git commit` alone',
+    find: "if (!/\\bgit\\s+commit\\b/.test(cmd)) return allow();",
+    repl: "if (false) return allow();"
+  },
+  {
+    file: 'commit-gate.js',
+    name: 'clean workspace still warns',
+    guards: 'a gate that cries wolf on a healthy workspace teaches people to ignore it (the 0.2 false-alarm lesson)',
+    find: "if (issues === 0) return allow();",
+    repl: "if (false) return allow();"
+  },
+
+  /* ---- init / upgrade (0.3). Every arm is a way a setup tool destroys somebody's project. ---- */
+  {
+    file: 'init.js',
+    name: 'setup overwrites files you already have',
+    guards: 'init must NEVER replace an existing CLAUDE.md, decision log or config',
+    find: "    if (mode === 'sync') {",
+    repl: "    if (true) {"
+  },
+  {
+    file: 'init.js',
+    name: '.gitignore lines duplicated on every run',
+    guards: 're-running init must be a no-op, not a growing .gitignore',
+    find: "const present = new Set(text.split(/\\r?\\n/).map(l => l.trim()));",
+    repl: "const present = new Set();"
+  },
+  {
+    file: 'init.js',
+    name: '.gitignore appended with the wrong line ending',
+    guards: 'a CRLF .gitignore must not turn into a mixed-ending file',
+    find: "const eol = /\\r\\n/.test(text) ? '\\r\\n' : '\\n';",
+    repl: "const eol = '\\n';"
+  },
+  {
+    file: 'init.js',
+    name: '--upgrade also overwrites CLAUDE.md',
+    guards: 'upgrade may touch the three project-local scripts and nothing else — CLAUDE.md is yours',
+    find: "const UPGRADE_SET = SCRIPT_PAIRS;",
+    repl: "const UPGRADE_SET = SCRIPT_PAIRS.concat([['templates/CLAUDE.md', 'CLAUDE.md']]);"
+  },
+  {
+    file: 'init.js',
+    name: '--dry-run still creates files',
+    guards: 'a dry run that writes is worse than no dry run: people run it to be safe',
+    find: "  if (FLAG.dry) return;\n  fs.mkdirSync(path.dirname(dst), { recursive: true });",
+    repl: "  fs.mkdirSync(path.dirname(dst), { recursive: true });"
+  },
+  {
+    file: 'init.js',
+    name: '--dry-run still appends',
+    guards: 'the append path (.gitignore, CLAUDE.md pointers) must honour the dry run too',
+    find: "function appendSafe(dst, text) {\n  if (FLAG.dry) return;",
+    repl: "function appendSafe(dst, text) {"
+  },
+  {
+    file: 'init.js',
+    name: 'auto-memory switched off without being asked',
+    guards: 'changing settings.json silently is exactly what this tool promised not to do',
+    find: "if (!FLAG.autoMemory) return off ? 'off' : 'on';",
+    repl: "if (false) return off ? 'off' : 'on';"
+  },
+  {
+    file: 'init.js',
+    name: 'settings.json rewritten without a backup',
+    guards: 'the original settings.json must survive as settings.json.dsr-backup',
+    find: "if (!fs.existsSync(bak)) writeFileSafe(bak, rawText);",
+    repl: "void bak;"
+  },
+  {
+    file: 'init.js',
+    name: 'invalid settings.json treated as empty and overwritten',
+    guards: 'a settings.json we cannot parse must be left exactly as it is',
+    // Anchored on the early `return` of the invalid-JSON branch rather than on the JSON.parse line:
+    // that line carries a literal BOM character, which a text anchor cannot reliably reproduce.
+    find: "    return 'unknown';\n  }\n  const off =",
+    repl: "    void 0;\n  }\n  const off ="
+  },
+  {
+    file: 'init.js',
+    name: 'CLAUDE.md pointers appended without --append-pointers',
+    guards: 'editing your CLAUDE.md happens only behind an explicit flag',
+    find: "if (!FLAG.pointers) return rec('todo'",
+    repl: "if (false) return rec('todo'"
+  },
+  {
+    file: 'init.js',
+    name: 'pointers appended even when CLAUDE.md already mentions the file',
+    guards: 'idempotence: no duplicate pointer lines',
+    find: "const missing = POINTERS.filter(([p]) => created.has(p) && text.indexOf(p) === -1);",
+    repl: "const missing = POINTERS.filter(([p]) => created.has(p));"
+  },
+  {
+    file: 'init.js',
+    name: 'setting up the plugin folder itself is allowed',
+    guards: 'running init inside the plugin folder would litter the product tree',
+    find: "if (sameOrInside(SRC, project)) die(",
+    repl: "if (false) die("
+  },
+  {
+    file: 'init.js',
+    name: 'a clone of the plugin repo is accepted as a project',
+    guards: 'a folder whose plugin.json says ds-recall is the product, not a project',
+    find: "if (pj && pj.name === 'ds-recall') die(",
+    repl: "if (false) die("
+  },
+  {
+    file: 'init.js',
+    name: 'a missing project folder is created on the fly',
+    guards: 'a mistyped path must not silently create a new folder tree',
+    find: "if (!isDir) die(",
+    repl: "if (false) die("
+  },
+  {
+    file: 'live-check-gate.js',
+    name: 'live-check accepts permissionDecision "allow" in warn mode',
+    guards: 'the whole point of the live check: a warning that auto-approves the commit must fail it',
+    find: "if (allowed) return { verdict: 'FAIL'",
+    repl: "if (false) return { verdict: 'FAIL'"
+  },
+  {
+    file: 'live-check-gate.js',
+    name: 'live-check turns "not logged in" into a verdict',
+    guards: 'an unmeasurable run must be reported as UNMEASURED, never as a pass or a fail',
+    find: "if (stream.notLoggedIn) return { verdict: 'UNMEASURED'",
+    repl: "if (false) return { verdict: 'UNMEASURED'"
+  },
+  {
+    file: 'live-check-gate.js',
+    name: 'live-check ignores the commit count in block mode',
+    guards: 'a deny that still left a commit behind is a broken gate',
+    find: "if (commits !== 1) return { verdict: 'FAIL', why: 'a blocked",
+    repl: "if (false) return { verdict: 'FAIL', why: 'a blocked"
+  },
+  {
+    file: 'init.js',
+    name: 'unknown options are accepted',
+    guards: 'a typo such as --force must not run a half-meant command',
+    find: "if (unknown.length) die(",
+    repl: "if (false) die("
   }
 ];
 
@@ -101,18 +282,30 @@ function runSuite() {
   catch (e) { return e.status === undefined ? 99 : e.status; }
 }
 
-const original = fs.readFileSync(LIB, 'utf8');
-const originalBytes = Buffer.byteLength(original);
+// Each injection targets ONE source file (default: session-lib.js). Originals are read once and
+// kept in memory; every run restores the exact original text right after the suite has run.
+const ORIGINALS = {};   // absolute path → original text
+function origOf(abs) { if (!(abs in ORIGINALS)) ORIGINALS[abs] = fs.readFileSync(abs, 'utf8'); return ORIGINALS[abs]; }
+const targetOf = (inj) => path.join(__dirname, inj.file || path.basename(LIB));
 // Anchors are written with \n. A Windows checkout (git autocrlf=true, the Git-for-Windows
 // default) turns the working tree into CRLF, so any multi-line anchor silently stopped
-// matching and the harness reported FAIL on a perfectly healthy install. Match the file's
-// own line ending instead of assuming one. Restore stays byte-exact (we write `original`).
-const EOL = original.indexOf('\r\n') !== -1 ? '\r\n' : '\n';
-const adapt = (s) => s.replace(/\r?\n/g, EOL);
+// matching and the harness reported FAIL on a perfectly healthy install. Match each file's
+// own line ending instead of assuming one. Restore stays byte-exact (we write the original).
+const adaptTo = (text, s) => s.replace(/\r?\n/g, text.indexOf('\r\n') !== -1 ? '\r\n' : '\n');
+// A crash or Ctrl-C in the middle of a run must never leave a defect behind in the source.
+function restoreAll() {
+  for (const abs of Object.keys(ORIGINALS)) {
+    try { if (fs.readFileSync(abs, 'utf8') !== ORIGINALS[abs]) fs.writeFileSync(abs, ORIGINALS[abs]); } catch (_) {}
+  }
+}
+process.on('exit', restoreAll);
+process.on('SIGINT', () => { restoreAll(); process.exit(130); });
 let blind = 0, caught = 0, unapplied = 0, notExercised = 0;
 
 console.log('DS-ReCall — negative test of the test suite');
-console.log(`source: ${path.basename(LIB)} (${originalBytes} bytes)\n`);
+const targets = Array.from(new Set(INJECTIONS.map(targetOf)));
+targets.forEach(origOf);
+console.log(`source: ${targets.map(t => `${path.basename(t)} (${Buffer.byteLength(origOf(t))} bytes)`).join(' · ')}\n`);
 
 console.log('baseline (unmodified source) …');
 const base = runSuite();
@@ -120,17 +313,19 @@ console.log(`  exit ${base} — ${base === 0 ? 'GREEN as expected' : 'ALREADY RE
 if (base !== 0) { console.log('RESULT: ABORTED'); process.exit(1); }
 
 for (const raw of INJECTIONS) {
-  const inj = Object.assign({}, raw, { find: adapt(raw.find), repl: adapt(raw.repl) });
+  const target = targetOf(raw);
+  const original = origOf(target);
+  const inj = Object.assign({}, raw, { find: adaptTo(original, raw.find), repl: adaptTo(original, raw.repl) });
   if (original.indexOf(inj.find) === -1) {
     unapplied++;
     console.log(`? ${inj.name}`);
-    console.log(`    anchor not found — injection could not be applied (source drifted?)`);
+    console.log(`    anchor not found in ${path.basename(target)} — injection could not be applied (source drifted?)`);
     continue;
   }
-  fs.writeFileSync(LIB, original.replace(inj.find, inj.repl));
+  fs.writeFileSync(target, original.replace(inj.find, inj.repl));
   const code = runSuite();
-  fs.writeFileSync(LIB, original);                       // restore immediately, always
-  const restored = fs.readFileSync(LIB, 'utf8') === original;
+  fs.writeFileSync(target, original);                    // restore immediately, always
+  const restored = fs.readFileSync(target, 'utf8') === original;
   if (!restored) { console.log('FATAL: could not restore source'); process.exit(1); }
 
   if (code !== 0) {

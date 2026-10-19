@@ -10,7 +10,7 @@
     {
       "name": "ds-recall",
       "description": "Curated, hallucination-resistant, session-aware memory for Claude Code. Replaces uncurated auto-memory with a disciplined CLAUDE.md + rules pipeline, integrity validation, and concurrency safety.",
-      "version": "0.2.1",
+      "version": "0.3.0",
       "author": {
         "name": "Devsoy",
         "url": "https://github.com/toresoysal"

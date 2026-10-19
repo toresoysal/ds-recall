@@ -1,6 +1,6 @@
 # DS-ReCall user guide
 
-> Applies to **v0.2.1** · written 2026-10-18 · every command and output below was run, not recalled. Where something is an estimate or was not tested, it says so.
+> Applies to **v0.3.0** · written 2026-10-19 · every command and output below was run, not recalled. Where something is an estimate or was not tested, it says so.
 
 **Contents**
 [1. What it is](#1-what-it-is) ·
@@ -80,24 +80,95 @@ claude --plugin-dir ./ds-recall      # loads the plugin for this run only
 ### Verify the install
 
 ```bash
-node scripts/selftest.js            # 59 cases, coverage per group      → RESULT: OK
+node scripts/selftest.js            # 140 cases, coverage per group     → RESULT: OK
 node scripts/selftest-negative.js   # injects real defects, expects red → RESULT: OK
 ```
 
 Both run in a throwaway temp workspace. Expect the negative harness to list **one** guard as `NOT EXERCISED` — it is declared up front with its reason and is not a failure. (On 0.2.0 the negative harness reported `RESULT: FAIL` on Windows checkouts where git had converted files to CRLF; fixed in 0.2.1.)
 
-Installed plugin files live under `~/.claude/plugins/cache/devsoy/ds-recall/<version>/` (on Windows `%USERPROFILE%\.claude\plugins\cache\devsoy\ds-recall\<version>\`). You will copy a few of them in the next step.
+Installed plugin files live under `~/.claude/plugins/cache/devsoy/ds-recall/<version>/` (on Windows `%USERPROFILE%\.claude\plugins\cache\devsoy\ds-recall\<version>\`). The setup script of the next step, `scripts/init.js`, is in that folder.
 
 ## 3. Set up a project (once)
 
-Installing the plugin gives you the hooks and commands. Each project additionally needs its own index, config and three helper scripts. **The commands call the project-local copies** (`node .claude/scripts/...`), because command bodies are prompts, not shells, and `${CLAUDE_PLUGIN_ROOT}` was not expanded inside them when 0.1 was built (not re-verified on 2.1.299 — if a future Claude Code expands it, this copy step can go away).
+Installing the plugin gives you the hooks and commands. Each project additionally needs its own index, config and three helper scripts. **The commands call those project-local copies** (`node .claude/scripts/...`), because command bodies are prompts, not shells, and `${CLAUDE_PLUGIN_ROOT}` was not expanded inside them when 0.1 was built (not re-verified on 2.1.299 — if a future Claude Code expands it, this step can go away).
+
+Since **0.3.0 one command does it.** Run it from your **project root**. It **never overwrites a file you already have**, and running it twice changes nothing.
+
+**macOS / Linux / Git Bash**
+
+```bash
+node ~/.claude/plugins/cache/devsoy/ds-recall/0.3.0/scripts/init.js   # adjust the version
+```
+
+**Windows PowerShell**
+
+```powershell
+node "$env:USERPROFILE\.claude\plugins\cache\devsoy\ds-recall\0.3.0\scripts\init.js"   # adjust the version
+```
+
+If you cloned the repository instead, run `node <your clone>/scripts/init.js`. Add **`--dry-run`** first if you want to see what it would do — it writes nothing. The output on a fresh folder:
+
+```
+DS-ReCall init — setup · plugin 0.3.0
+  project: <your project>
+  source : <the plugin folder>
+
+  created  CLAUDE.md
+  created  docs/DECISIONS.md
+  created  docs/TIMELINE.md
+  created  .claude/ds-recall.config.json
+  created  .claude/scripts/validate.js
+  created  .claude/scripts/wrap-prep.js
+  created  .claude/scripts/session-lib.js
+  created  .gitignore  — added .claude/active/ .claude/backups/ .claude/.index.lock _memory-graph/
+
+  8 created · 0 changed · 0 left as they were · 0 to do · 0 errors
+
+Next:
+  1. Edit CLAUDE.md: replace the <placeholders> (project name, one-paragraph summary, your hard rules). Keep it an INDEX.
+  2. Built-in auto-memory: STILL ON — add {"autoMemoryEnabled": false} to .claude/settings.json (or re-run with --disable-auto-memory)
+  3. node .claude/scripts/validate.js    → expect RESULT: OK
+
+Integrity now: referenced=2 broken=0 orphan=0 unindexed=0
+
+RESULT: OK
+```
+
+| Option | What it does |
+|---|---|
+| *(none)* | set the project up: creates what is missing, leaves what exists (`kept`) |
+| `--dry-run` | print what would happen and write nothing — also with every other flag |
+| `--upgrade` | re-sync **only** `validate.js`, `wrap-prep.js` and `session-lib.js` (see [§12](#12-upgrade-and-uninstall)) |
+| `--append-pointers` | you already have a `CLAUDE.md`: append the two lines that link the new `docs/DECISIONS.md` and `docs/TIMELINE.md` (see below) |
+| `--disable-auto-memory` | merge `{"autoMemoryEnabled": false}` into `.claude/settings.json`; the original is kept as `settings.json.dsr-backup`. **Without this flag `init.js` only reports the state** — it never edits your settings silently |
+
+What it refuses, with `RESULT: REFUSED` and exit `1`: a folder **inside** the plugin folder, a **clone of the plugin repository** (its `plugin.json` says `ds-recall`), a folder that **does not exist** (it will not create one), and an **unknown option** (a typo such as `--force` must not run a half-meant command). A `settings.json` it cannot parse as JSON is left untouched. Existing `.gitignore` files are appended to in their **own line ending** (CRLF stays CRLF), and a rule that already ignores the whole `.claude/` folder counts as covering the `.claude/` lines.
+
+> ⚠️ **Already have your own `CLAUDE.md`?** `init.js` keeps it — but the `docs/DECISIONS.md` and `docs/TIMELINE.md` it creates are then **orphans** until your `CLAUDE.md` points at them (measured: `orphan=2`). It tells you so (`todo … ORPHAN risk`) and prints the two lines:
+> ```
+> - Decisions (dated, reasoned) -> docs/DECISIONS.md
+> - Milestones -> docs/TIMELINE.md
+> ```
+> Add them yourself, or re-run with `--append-pointers` (it appends only lines for files **it** created, only once, never when the path is already mentioned). Plain paths are enough; markdown link syntax is not required. Since 0.3.0 an orphan only produces a commit-gate **warning** by default ([§4](#4-adopting-it-in-a-repo-that-already-has-docs)).
+
+**Then, by hand (what a script should not decide for you):**
+
+1. **Turn built-in auto-memory off** for this project — `init.js` tells you whether it is still on. Either re-run it with `--disable-auto-memory`, or add this to `.claude/settings.json` (merge with what is there):
+   ```json
+   { "autoMemoryEnabled": false }
+   ```
+   or set the environment variable `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`. If you forget, `SessionStart` re-checks every session and injects a visible warning until it is off, so you never silently run both memory layers.
+2. **Fill in `CLAUDE.md`.** Replace the `<placeholders>`: project name, a one-paragraph summary, your hard rules. Keep it an **index** — point to detail files, never paste detail in.
+
+<details>
+<summary><b>The same setup by hand</b> (what 0.1 and 0.2 required — useful if you want to see or change every step)</summary>
 
 Run from your **project root**. `cp -n` / `Test-Path` never overwrite a file you already have.
 
 **macOS / Linux / Git Bash**
 
 ```bash
-DSR=~/.claude/plugins/cache/devsoy/ds-recall/0.2.1   # adjust the version; or point at your clone
+DSR=~/.claude/plugins/cache/devsoy/ds-recall/0.3.0   # adjust the version; or point at your clone
 mkdir -p .claude/scripts .claude/rules docs
 cp -n "$DSR/templates/CLAUDE.md"             ./CLAUDE.md
 cp -n "$DSR/templates/DECISIONS.md"          ./docs/DECISIONS.md
@@ -110,7 +181,7 @@ printf '\n# DS-ReCall runtime (backups hold full session transcripts - never com
 **Windows PowerShell**
 
 ```powershell
-$DSR = "$env:USERPROFILE\.claude\plugins\cache\devsoy\ds-recall\0.2.1"   # adjust the version
+$DSR = "$env:USERPROFILE\.claude\plugins\cache\devsoy\ds-recall\0.3.0"   # adjust the version
 New-Item -ItemType Directory -Force .claude\scripts, .claude\rules, docs | Out-Null
 $copy = @(
   @('templates\CLAUDE.md',             'CLAUDE.md'),
@@ -132,23 +203,9 @@ _memory-graph/
 "@ | Add-Content -Encoding ascii .gitignore
 ```
 
-> `wrap-prep.js` requires `session-lib.js` from the same folder, and `/ds-recall:wrap` calls `wrap-prep.js` — copy all three.
+`wrap-prep.js` requires `session-lib.js` from the same folder, and `/ds-recall:wrap` calls `wrap-prep.js` — copy all three.
 
-> ⚠️ **Already have your own `CLAUDE.md`?** The block keeps it (nothing is overwritten) — but the copied `docs/DECISIONS.md` and `docs/TIMELINE.md` are then **orphans** until your `CLAUDE.md` points at them, and the commit-gate will block `git commit`. Measured: `orphan=2`. Fix it by adding two lines to your `CLAUDE.md`:
-> ```
-> - Decisions (dated, reasoned) -> docs/DECISIONS.md
-> - Milestones -> docs/TIMELINE.md
-> ```
-> Plain paths are enough; markdown link syntax is not required. (Measured after adding them: `orphan=0`, `RESULT: OK`.) More in [§4](#4-adopting-it-in-a-repo-that-already-has-docs).
-
-**Then, by hand (two things a script should not decide for you):**
-
-1. **Turn built-in auto-memory off** for this project. In `.claude/settings.json` add (merge with what is there):
-   ```json
-   { "autoMemoryEnabled": false }
-   ```
-   or set the environment variable `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`. If you forget, `SessionStart` re-checks every session and injects a visible warning until it is off, so you never silently run both memory layers.
-2. **Fill in `CLAUDE.md`.** Replace the `<placeholders>`: project name, a one-paragraph summary, your hard rules. Keep it an **index** — point to detail files, never paste detail in.
+</details>
 
 **What you now have**
 
@@ -159,7 +216,7 @@ _memory-graph/
 | `docs/TIMELINE.md` | real milestones only (not every session) |
 | `.claude/ds-recall.config.json` | settings — see the [configuration reference](CONFIGURATION.md) |
 | `.claude/scripts/*.js` | the three project-local helper scripts |
-| `.claude/rules/*.md` | durable "always / never" rules; copy `templates/rule-example.md` as a starting point |
+| `.claude/rules/*.md` | durable "always / never" rules; copy `templates/rule-example.md` as a starting point. `init.js` does not create this folder (the by-hand steps do, empty) — make it when you write your first rule |
 
 **Check it:**
 
@@ -179,23 +236,32 @@ Exit code `0` = clean, `1` = broken/orphan/unindexed found. Size warnings are ad
 
 This is the case that surprises people, so read it before enabling the plugin on an existing repo.
 
-The validator scans the directories in `tracked` (default `["docs"]`) for Markdown files and expects at least one **index file** (default `CLAUDE.md`) to reference each. A note that nothing references is an **ORPHAN**, and **while orphans, broken links or unindexed sessions exist the commit-gate blocks `git commit`**.
+The validator scans the directories in `tracked` (default `["docs"]`) for Markdown files and expects at least one **index file** (default `CLAUDE.md`) to reference each. A note that nothing references is an **ORPHAN**, and **while orphans, broken links or unindexed sessions exist the commit-gate reacts to every `git commit`**. Since **0.3.0 it only warns** by default; in strict mode (`"gateCommit": "block"`) it blocks.
 
-Measured on a fresh install (a repo with `docs/foo.md`, no `CLAUDE.md`, no config):
+Measured on a fresh install (a repo with `docs/foo.md`, no `CLAUDE.md`, no config) — what the gate says by default:
+
+```
+[DS-ReCall] Memory integrity FAIL — this commit was NOT blocked (gateCommit is "warn"): 0 broken, 1 orphan, 0 unindexed session(s). …
+```
+
+and what it did in 0.1 and 0.2, and still does with `"gateCommit": "block"` or `true`:
 
 ```
 Commit blocked — memory integrity FAIL: 0 broken, 1 orphan, 0 unindexed session(s).
 ```
 
+(0.2 shipped with blocking on, and every commit in such a repo was denied until the notes were linked — that is why 0.3.0 changed the default.)
+
 Your options, from least to most invasive:
 
-1. **Don't gate yet.** Set `"gateCommit": false` in `.claude/ds-recall.config.json`, adopt the rest, turn it on later.
+1. **Do nothing.** Commits go through; the warning tells you what to fix. Adopt at your own pace.
 2. **Link what you have.** Add a *WHERE THINGS ARE* list to `CLAUDE.md` that references each note — or create a **sub-index** (e.g. `docs/research/README.md`) that links a whole folder, and list it in `indexes`:
    ```json
    "indexes": ["CLAUDE.md", "docs/research/README.md"]
    ```
    References resolve relative to each index file's own folder, so one sub-index covers everything under it without bloating the root.
 3. **Narrow the scan.** Change `tracked` to the folders you actually want curated.
+4. **Silence the gate** with `"gateCommit": false`, or **make it strict** with `"gateCommit": "block"` once `node .claude/scripts/validate.js` is clean.
 
 Already have a `CLAUDE.md`? Don't overwrite it: keep yours, and add the status-tag convention (✅/⚠️/⛔/❓ plus a date) and a *WHERE THINGS ARE* section.
 
@@ -294,9 +360,19 @@ Both are `PreToolUse` hooks shipped in the plugin's `hooks.json`, so they are ac
 ### Commit-gate (Moat-1)
 
 - **Fires on:** Bash commands matching `git commit`. Everything else is untouched.
-- **Blocks while:** integrity has any **broken**, **orphan** or **unindexed** finding. Size warnings never block.
+- **Reacts while:** integrity has any **broken**, **orphan** or **unindexed** finding. Size warnings never trigger it. A clean workspace is always silent.
 - **Fail-open:** if the validator itself crashes the commit is allowed (and a message says the guarantee lapsed). A gate must not stop work because of its own bug.
-- **Default: on.** Turn it off with `"gateCommit": false`. See [§4](#4-adopting-it-in-a-repo-that-already-has-docs) before enabling on an existing repo.
+- **Mode** — `"gateCommit"` in `.claude/ds-recall.config.json`:
+
+  | Value | Behaviour |
+  |---|---|
+  | absent or `"warn"` — **the default since 0.3.0** | the commit **goes through**. The user sees a warning (`systemMessage`) and Claude receives the same text as context (`additionalContext`). The hook returns **no** `permissionDecision` on purpose: Claude Code's documentation says `"allow"` skips the user's own permission prompt, and a warning must never auto-approve a commit |
+  | `true` or `"block"` | the commit is **blocked** while integrity fails (the 0.1/0.2 behaviour; configs that already say `true` keep it) |
+  | `false` or `"off"` | the gate does nothing |
+  | anything else (a typo such as `"blok"`) | treated as `"warn"`, and the warning says the value was not recognised — never a silent switch-off, never a silent block |
+
+  A config file that is not valid JSON also falls back to `"warn"`.
+- **Not yet seen live.** The warning's JSON follows Claude Code's documented hook format and is exercised by our tests; we could not run a logged-in `claude` ourselves. `node scripts/live-check-gate.js` does that in two tiny model calls on your machine and judges the evidence Claude Code itself emits plus the real git history. See [§4](#4-adopting-it-in-a-repo-that-already-has-docs) for the adoption side.
 
 ### Lock-guard (Moat-2)
 
@@ -356,7 +432,19 @@ Most of it is automatic. The manual tools, all non-destructive by default:
 claude plugin update ds-recall      # restart Claude Code to apply
 ```
 
-Then **re-copy the three project-local scripts** (`validate.js`, `wrap-prep.js`, `session-lib.js`) from the new plugin folder into `.claude/scripts/` of each project. The hooks run the plugin's own copies, but `/ds-recall:wrap` and `/ds-recall:status` run the project-local ones, so they do **not** update by themselves. Compare templates against your own files before overwriting anything you customised.
+Then **re-sync the three project-local scripts** in each project, from its root:
+
+```bash
+node ~/.claude/plugins/cache/devsoy/ds-recall/0.3.0/scripts/init.js --upgrade   # use the new version's folder
+```
+
+```powershell
+node "$env:USERPROFILE\.claude\plugins\cache\devsoy\ds-recall\0.3.0\scripts\init.js" --upgrade
+```
+
+The hooks run the plugin's own copies, but `/ds-recall:wrap` and `/ds-recall:status` run the project-local ones, so they do **not** update by themselves — nothing reminds you, so make this step part of every upgrade. `--upgrade` rewrites **only** `validate.js`, `wrap-prep.js` and `session-lib.js` (it prints `old -> new` for each file it changes, and `unchanged` for the rest); your `CLAUDE.md`, config, `.gitignore`, decision log and any file of yours in `.claude/scripts/` are never touched. Add `--dry-run` to preview. A project that has no config yet is told to run `init.js` without `--upgrade`. Templates are not part of an upgrade: compare `templates/` against your own files by hand if you want new keys.
+
+Upgrading to **0.3.0**: the commit-gate default changes from *block* to **warn** for any project whose config does not say `"gateCommit"`. If you rely on blocking, write `"gateCommit": "block"` (configs that already say `true` keep blocking).
 
 From 0.1.x to 0.2.x no action is required — hooks are backward compatible and existing `⚪ CLOSED` lines are honoured. The new config keys are optional; copy them from `templates/ds-recall.config.json` if you want them. To clear a 0.1 backlog, use `cleanup.js` ([§11](#11-maintenance)).
 
@@ -385,6 +473,7 @@ This removes the plugin. It does **not** touch what is yours: `CLAUDE.md`, `docs
 | `.claude/.index.lock` | index writes | momentary; removed immediately |
 | `.claude/CHILD_FEED.md` (in the *parent*) | `SessionEnd` / `wrap-prep --child-feed` | nested workspaces only |
 | `_memory-graph/` | `build-memory-graph.js` | regenerated on demand |
+| `.claude/settings.json.dsr-backup` | `init.js --disable-auto-memory` | the original settings file, kept once before it was rewritten; only exists if you used that flag |
 
 The paths read from config — `sessionsDir`, `sessionsIndex`, `tracked` and the `evict` files — are **contained to the project root**: a copied config containing `"sessionsDir": "../../outside"` falls back to the default instead of turning a hook into an arbitrary-path write.
 
@@ -394,7 +483,7 @@ The paths read from config — `sessionsDir`, `sessionsIndex`, `tracked` and the
 - **Wrap needs a human to ask for it.** It is a command, not a hook. The safety net (transcript backup, lock release, "owed" warning) is automatic; the consolidation is not.
 - **The judgement half of `/wrap` is model-driven** and only as good as the session it summarises. Facts that were never verified should be tagged ⚠️ or ❓ — the discipline is yours.
 - **The lock-guard does not intercept shell writes** ([§8](#8-the-two-guards)).
-- **The commit-gate is on by default** ([§4](#4-adopting-it-in-a-repo-that-already-has-docs)).
-- **Project-local scripts are snapshots** ([§12](#12-upgrade-and-uninstall)).
+- **The commit-gate only warns by default** (since 0.3.0): a project that never sets `"gateCommit": "block"` is not protected from commits that fail integrity, and a warning can be ignored ([§8](#8-the-two-guards)).
+- **Project-local scripts are snapshots.** `init.js --upgrade` re-syncs them in one command, but nothing reminds you to run it ([§12](#12-upgrade-and-uninstall)).
 - **Tested mainly on one Windows workspace, Node 22.** Claude Code's marketplace flow was verified end to end on 2.1.299; macOS and Linux reports are welcome.
 - **Single maintainer.** Issues and pull requests are read, but expect a small team's pace.

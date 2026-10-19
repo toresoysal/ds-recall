@@ -13,7 +13,7 @@ Claude Code's built-in auto-memory lets *Claude* decide what to remember. DS-ReC
 
 The hooks make **no model calls** and **no network requests**, have **no dependencies** beyond Node.js, and keep everything in plain Markdown in your own repo.
 
-> **Status: v0.2.1.** Core built and tested (59 self-test cases plus a negative harness that injects real defects and proves the suite goes red). Used daily on the workspace it was built for. It is young software with a single maintainer — field reports and issues are welcome.
+> **Status: v0.3.0.** Core built and tested (140 self-test cases plus a negative harness that injects real defects and proves the suite goes red). Used daily on the workspace it was built for. It is young software with a single maintainer — field reports and issues are welcome.
 
 ---
 
@@ -35,9 +35,19 @@ Inside a Claude Code session the equivalent is `/plugin install ds-recall --mark
 
 **Try it without installing** (any Claude Code version): `git clone https://github.com/toresoysal/ds-recall` and start Claude Code with `claude --plugin-dir ./ds-recall`.
 
-Installing is the easy half. Each project also needs a **one-time setup** (copy three templates and three scripts, turn built-in auto-memory off, add a few `.gitignore` lines) — about five minutes, copy-paste blocks for macOS/Linux and Windows are in **[the user guide §3](docs/USER-GUIDE.md#3-set-up-a-project-once)**.
+Installing is the easy half. Each project also needs a **one-time setup**, and since 0.3.0 that is one command, run from your project root (the plugin's files live under `~/.claude/plugins/cache/devsoy/ds-recall/<version>/`):
 
-> ⚠️ **Heads-up before you enable it on an existing repo:** the commit-gate is **on by default**. If the repo has a `docs/` folder that your `CLAUDE.md` does not link to, DS-ReCall sees *orphaned* notes and **blocks `git commit`** until you link them or set `"gateCommit": false`. Measured, not hypothetical — see [troubleshooting](docs/TROUBLESHOOTING.md#my-git-commit-is-blocked).
+```bash
+node ~/.claude/plugins/cache/devsoy/ds-recall/0.3.0/scripts/init.js                  # macOS / Linux / Git Bash
+```
+
+```powershell
+node "$env:USERPROFILE\.claude\plugins\cache\devsoy\ds-recall\0.3.0\scripts\init.js"   # Windows PowerShell
+```
+
+It creates `CLAUDE.md`, the decision log, the timeline and the config, copies the three helper scripts the commands run, and adds the `.gitignore` lines — **never overwriting a file you already have**. Add `--dry-run` first to see exactly what it would do. It does not switch built-in auto-memory off behind your back: it reports the state, and only `--disable-auto-memory` edits `.claude/settings.json`. Every option: **[user guide §3](docs/USER-GUIDE.md#3-set-up-a-project-once)**.
+
+> **The commit-gate warns by default (0.3.0).** If the repo has a `docs/` folder that your `CLAUDE.md` does not link to, DS-ReCall sees *orphaned* notes and **warns on every `git commit` — it does not block it.** Strict mode is one config line, `"gateCommit": "block"`. 0.1 and 0.2 blocked by default (measured: a fresh install in a repo with an unlinked `docs/` denied every commit); configs that already say `"gateCommit": true` keep blocking. See [troubleshooting](docs/TROUBLESHOOTING.md#my-git-commit-is-blocked).
 
 ## The daily loop
 
@@ -52,7 +62,7 @@ Installing is the easy half. Each project also needs a **one-time setup** (copy 
 |---|---|---|
 | 1 | **Capture** | `SessionStart` / `SessionEnd` hooks: per-session stub, lock, `⚪ OPEN → 🟡 RAW → ✅ CONSOLIDATED` status machine, clock injection, auto-memory check, garbage-collection of empty stubs, lossless transcript-backup rotation. |
 | 2 | **Consolidate** | `/ds-recall:wrap`. Its mechanical half runs as `wrap-prep.js`, so the model never reads the big index files just to edit one line. |
-| 3 | **Validate** (Moat-1) | `validate.js` + a `PreToolUse` **commit-gate** that blocks `git commit` while integrity is FAIL. |
+| 3 | **Validate** (Moat-1) | `validate.js` + a `PreToolUse` **commit-gate** that warns on `git commit` while integrity is FAIL — or **blocks** it in strict mode (`"gateCommit": "block"`). |
 | 4 | **Concurrency** (Moat-2) | Per-session locks + a `PreToolUse` **lock-guard** that blocks `Write`/`Edit` to shared canon files while another live session holds a lock. *Not* a sandbox — see [limits](#limits-stated-up-front). |
 | 5 | **Visualize** | `/ds-recall:graph` — a zero-config, self-contained Canvas 2D map of your sessions: planets per topic, a red "Needs Wrap" hot-spot, same-day bonds. No CDN, no build step. |
 
@@ -64,7 +74,7 @@ Installing is the easy half. Each project also needs a **one-time setup** (copy 
 | `/ds-recall:status` | Memory health at a glance — auto-memory state, live locks, sessions owed a wrap, integrity, index size, last milestone. Read-only. |
 | `/ds-recall:graph` | Open the interactive session graph. |
 
-Helper scripts (run with `node`): `validate.js` (integrity), `wrap-prep.js` (the deterministic half of wrap), `cleanup.js` (one-time backlog cleanup), `build-memory-graph.js`, and the test suites `selftest.js` / `selftest-negative.js`.
+Helper scripts (run with `node`): `init.js` (project setup and `--upgrade`), `validate.js` (integrity), `wrap-prep.js` (the deterministic half of wrap), `cleanup.js` (one-time backlog cleanup), `build-memory-graph.js`, and the test suites `selftest.js` / `selftest-negative.js`.
 
 ## Documentation
 
@@ -82,9 +92,9 @@ Helper scripts (run with `node`): `validate.js` (integrity), `wrap-prep.js` (the
 | Who curates | Claude decides what to save | an AI summarises for you | you — or Claude, explicitly, at `/wrap` |
 | Cost per session | loads the first 200 lines / 25 KB of `MEMORY.md` | usually a model call per session | **zero** model calls from hooks; ~158 tokens always-on (Claude Code's own estimate, `claude plugin details ds-recall`), ~2.2k tokens when `/wrap` runs — plus whatever your own `CLAUDE.md` and rules weigh |
 | When memory outgrows its limit | an explicit error since Claude Code 2.1.210 (earlier: silent truncation) | varies by tool | a visible size warning at `/ds-recall:status` and `/wrap` |
-| Multi-session safety | not a headline feature | not a headline feature of the tools we looked at | per-session locks + commit-gate |
+| Multi-session safety | not a headline feature | not a headline feature of the tools we looked at | per-session locks + a commit-gate (warns by default, blocks in strict mode) |
 | Search over past sessions | recall of what it saved | usually yes (semantic / full-text) | **none** — the index plus `grep` |
-| Setup | none | install | install **plus** a one-time per-project setup and one explicit step per session |
+| Setup | none | install | install **plus** a one-command per-project setup (`init.js`) and one explicit step per session |
 
 The built-in auto-memory was the reference point when this project started; it has since stopped truncating silently, so the remaining difference is **curation, not visibility**.
 
@@ -95,8 +105,9 @@ In our own review (September 2026) the tools closest to DS-ReCall in philosophy 
 - **No retrieval layer.** There is no semantic or full-text search over past sessions. Recall is the index plus `grep`. This is the largest capability gap against the tools above.
 - **The `/wrap` step relies on discipline.** The mechanical half is deterministic; the judgement half (what was decided, what is a rule) is done by the model and is only as good as the session.
 - **The lock-guard is a guard against accidents, not a sandbox.** It hooks the `Write` and `Edit` tools; it does not intercept arbitrary shell redirects such as `echo x >> CLAUDE.md`.
-- **The commit-gate is on by default** (see the heads-up above).
-- **Project-local script copies do not auto-update.** `/wrap` and `/status` run the copies you placed in `.claude/scripts/`; re-copy them after upgrading the plugin ([guide §12](docs/USER-GUIDE.md#12-upgrade-and-uninstall)).
+- **The commit-gate only warns by default** (since 0.3.0). It cannot protect a project that never sets `"gateCommit": "block"`; the price of the gentler default is that a warning can be ignored.
+- **Project-local script copies do not auto-update.** `/wrap` and `/status` run the copies in `.claude/scripts/`; after upgrading the plugin, one command re-syncs them: `node <plugin>/scripts/init.js --upgrade` ([guide §12](docs/USER-GUIDE.md#12-upgrade-and-uninstall)). Nothing reminds you to run it.
+- **The warn output has not been seen by a live Claude Code session by us.** It follows the documented hook format and is exercised by our own tests. `node scripts/live-check-gate.js` proves it against your logged-in `claude` (two tiny model calls); we have not been able to run that live half ourselves yet. A result from you — `OK` or `FAIL` — is worth an issue.
 - **Tested mainly on one Windows workspace and one Node version** (v22). Cross-platform by construction (plain Node, Unicode- and space-safe paths), but field reports from macOS and Linux are what this project needs.
 
 ## Verify your install
@@ -104,7 +115,7 @@ In our own review (September 2026) the tools closest to DS-ReCall in philosophy 
 The suites run in a throwaway temp workspace and touch nothing of yours:
 
 ```bash
-node scripts/selftest.js            # 59 cases, prints coverage per group
+node scripts/selftest.js            # 140 cases, prints coverage per group
 node scripts/selftest-negative.js   # injects real defects, proves the suite goes red
 ```
 

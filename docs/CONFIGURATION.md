@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Applies to **v0.2.1** · every default below was read from the source, not remembered.
+> Applies to **v0.3.0** · every default below was read from the source, not remembered.
 
 DS-ReCall is configured by one optional file per project: **`.claude/ds-recall.config.json`**. No file means all defaults. Start from `templates/ds-recall.config.json`.
 
@@ -31,7 +31,7 @@ DS-ReCall is configured by one optional file per project: **`.claude/ds-recall.c
 
 | Key | Default | Read by | Meaning |
 |---|---|---|---|
-| `gateCommit` | **on** (only an explicit `false` turns it off) | commit-gate | Block `git commit` while integrity has any broken, orphan or unindexed finding. **Read [the user guide §4](USER-GUIDE.md#4-adopting-it-in-a-repo-that-already-has-docs) before enabling on an existing repo.** |
+| `gateCommit` | **`"warn"`** (also when the key is absent or the config file is not valid JSON) | commit-gate | What the gate does on `git commit` while integrity has any broken, orphan or unindexed finding. `"warn"`: the commit **goes through**, the user sees a warning and Claude gets it as context (no `permissionDecision` — `"allow"` would skip the user's permission prompt). `true` or `"block"`: the commit is **blocked** (the 0.1/0.2 behaviour). `false` or `"off"`: the gate does nothing. Any other value (a typo) is treated as `"warn"` **and the warning says so** — never a silent switch-off. Values are case-insensitive. **0.3.0 changed the default from block to warn**; see [the user guide §4](USER-GUIDE.md#4-adopting-it-in-a-repo-that-already-has-docs). |
 | `protected` | `["CLAUDE.md", "DECISIONS.md", "SESSIONS_INDEX.md"]` | lock-guard | File **names** (matched by basename, anywhere in the tree) that `Write`/`Edit` may not touch while another live session holds a lock. Must be an array — anything else falls back to the default rather than silently weakening the guard. |
 | `staleLockHours` | `12` | hooks, lock-guard, GC | A lock older than this is a ghost (its session never reached `SessionEnd`): it is ignored by the guard and swept at the next `SessionStart`. It is also the minimum age before an empty stub may be garbage-collected. |
 
@@ -111,23 +111,23 @@ By default `/ds-recall:graph` makes one planet per `[Project - Topic - Vol N]` t
 | Key | Default | Meaning |
 |---|---|---|
 | `wrapCommand` | `/ds-recall:wrap` | The command name printed in `SessionStart` messages, guard messages and the graph. Change it if you expose the commands under another name (for example as project-level slash commands). It only changes the **text shown**, not what runs. |
-| `statusCommand` | `/ds-recall:status` | **Reserved.** Present in the defaults but not read by any script in 0.2.1; setting it has no effect today. |
+| `statusCommand` | `/ds-recall:status` | **Reserved.** Present in the defaults but not read by any script in 0.3.0; setting it has no effect today. |
 
 ---
 
 ## Two starting points
 
-**Adopting it in an existing repo, gently** — nothing blocks a commit until you are ready:
+**Adopting it in an existing repo, gently** — since 0.3.0 this is the default (`"warn"`): commits are never stopped, the warning tells you what to fix:
 
 ```json
 {
   "indexes": ["CLAUDE.md"],
   "tracked": ["docs"],
-  "gateCommit": false
+  "gateCommit": "warn"
 }
 ```
 
-Run `node .claude/scripts/validate.js`, link or move whatever it reports, then remove `gateCommit` (or set it to `true`).
+Run `node .claude/scripts/validate.js`, link or move whatever it reports. When it says `RESULT: OK`, switch to strict mode: `"gateCommit": "block"`. To silence the gate entirely: `"gateCommit": false`.
 
 **A workspace with sub-projects** — keep the root index from growing without bound:
 
