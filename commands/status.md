@@ -1,6 +1,6 @@
 ---
 description: Show DS-ReCall memory health at a glance — auto-memory state, active sessions, unconsolidated (RAW) sessions, integrity (broken/orphan/size), index size, last milestone. Read-only.
-allowed-tools: ["Read", "Bash", "Grep", "Glob"]
+allowed-tools: ["Read", "Grep", "Glob"]
 ---
 
 # /ds-recall:status — Memory Health Dashboard
@@ -15,7 +15,7 @@ Report DS-ReCall state for this project. **Read-only — do not modify any file.
    ```
    node .claude/scripts/validate.js
    ```
-   Require 0 broken, 0 orphan. Size warnings are advisory. **If this errors with "Cannot find module"**, the install step that copies `validate.js` into the project was skipped — copy it from the plugin root (`<plugin>/ds-recall/scripts/validate.js` → `.claude/scripts/validate.js`) and re-run.
+   This command does not pre-approve the Bash tool, so Claude Code asks you to approve this one read-only command. Require 0 broken, 0 orphan. Size warnings are advisory. **If this errors with "Cannot find module"**, the install step that copies `validate.js` into the project was skipped — run `node <plugin>/scripts/init.js` once in the project root (or copy `<plugin>/scripts/validate.js` → `.claude/scripts/validate.js`) and re-run.
 5. **Index size** — `CLAUDE.md` line / byte count vs the limit (default 200 lines / 25 KB). Near the limit → suggest moving detail into `docs/`.
 6. **Last milestone** — last entry of `docs/TIMELINE.md` (if it exists).
 

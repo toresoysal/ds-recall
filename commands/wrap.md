@@ -1,7 +1,7 @@
 ---
 description: Consolidate the current session into curated memory — extract decisions, update the index, mark the session consolidated, and verify integrity. Run before ending a session.
 disable-model-invocation: true
-allowed-tools: ["Read", "Edit", "Write", "Bash", "Grep", "Glob"]
+allowed-tools: ["Read", "Edit", "Write", "Grep", "Glob"]
 ---
 
 # /ds-recall:wrap — Session Consolidation
@@ -17,6 +17,8 @@ Work through the steps below. Do not invent facts — every claim must be verifi
 ```bash
 node .claude/scripts/wrap-prep.js . --gc
 ```
+
+(This command does not pre-approve the Bash tool, so Claude Code asks you to approve the `node .claude/scripts/…` commands below. To stop being asked, add `Bash(node .claude/scripts/wrap-prep.js:*)` and `Bash(node .claude/scripts/validate.js:*)` to the `permissions.allow` list in **your own** `.claude/settings.json` — that choice stays yours.)
 
 You get a ~40-line briefing: this session's stub and status · sessions that genuinely still
 need consolidating · the root-index line cap · per-session fixed load · integrity.
@@ -111,7 +113,7 @@ node .claude/scripts/validate.js
 ```
 
 Require **0 broken, 0 orphan** before treating the session as closed.
-**Re-running is the point:** "the script ran" is not a verification — seeing the number change is. **If this errors with "Cannot find module"**, the install step that copies `validate.js` into the project was skipped — copy it from the plugin root (`<plugin>/ds-recall/scripts/validate.js` → `.claude/scripts/validate.js`) and re-run before treating the wrap as sealed.
+**Re-running is the point:** "the script ran" is not a verification — seeing the number change is. **If this errors with "Cannot find module"**, the install step that copies `validate.js` into the project was skipped — run `node <plugin>/scripts/init.js` once in the project root (or copy `<plugin>/scripts/validate.js` → `.claude/scripts/validate.js`) and re-run before treating the wrap as sealed.
 
 ## 10. Closing seal (the LAST thing you print to chat — required)
 End every wrap with a closing seal that makes it obvious, at a glance, that the session is **finished and saved to memory**. This is the **last thing you print** — add nothing after it. Goal: when an old session is reopened, "consolidated + saved" is instantly clear.

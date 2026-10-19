@@ -4,6 +4,29 @@ All notable changes to DS-ReCall are documented here.
 
 ---
 
+## [0.3.1] — 2026-10-19
+
+**Directory-review fixes. No hook or script behaviour changed.**
+
+Anthropic's directory scan held 0.2.1 on a policy finding, and listed two more. All three are fixed here:
+
+### Changed
+
+- **`/ds-recall:wrap`, `/ds-recall:status` and `/ds-recall:graph` no longer pre-approve the Bash tool** (`allowed-tools` lost its bare `Bash` entry; this was the directory's *policy hold*). Claude Code now asks before running the `node` helper scripts; the commands say so, and the README shows the two `permissions.allow` lines to add to your own settings if you do not want the prompts. Nothing else about the commands changed.
+- **Removed the duplicate `hooks` entry from `plugin.json`.** `hooks/hooks.json` is always loaded; listing it again made the loader report a duplicate-hooks-file error. Measured on Claude Code 2.1.299 with an isolated install: the same three hooks (`SessionStart`, `SessionEnd`, `PreToolUse`) load before and after.
+- **Fixed three wrong paths in command text.** `/graph`, `/status` and `/wrap` pointed at `<plugin>/ds-recall/scripts/…`, a path that exists only in our development tree; an installed plugin has `scripts/` at its root.
+
+### Added
+
+- **Plugin icon** (`.claude-plugin/icon.png`, 1024×1024 PNG, 149 KB) and the `icon` field in `plugin.json`.
+
+### Not changed, stated plainly
+
+- The directory scan also reports `Uses a credential from the user's machine` against `plugin.json`. The plugin declares no MCP servers and no script opens a network connection (the opt-in `live-check-gate.js` only launches your own `claude` CLI), so we cannot point at a credential read; it is left for the reviewer to confirm. The `Write`/`Edit` entries in `allowed-tools` stay unscoped because `/wrap` writes the files your own config names.
+- The self-test suite (140 cases) passes unchanged; the negative harness was not re-run because no script was touched.
+
+---
+
 ## [0.3.0] — 2026-10-19
 
 **The commit-gate stops blocking new users by default, and setting up a project is one command.**

@@ -1,6 +1,6 @@
 ---
 description: Visualize this project's memory as an interactive graph — sessions cluster by topic, RAW ones surface as a "Needs Wrap" hot-spot you can click straight into. Triggers on "show my memory graph", "visualize my sessions", "memory map".
-allowed-tools: ["Read", "Write", "Bash"]
+allowed-tools: ["Read", "Write"]
 ---
 
 # /ds-recall:graph — Memory Graph
@@ -13,14 +13,14 @@ This is deliberately **not** a hand-curated multi-project company map (that need
 
 ## 1. Generate fresh data (0 LLM token)
 ```
-node <plugin-root>/ds-recall/scripts/build-memory-graph.js .
+node <plugin-root>/scripts/build-memory-graph.js .
 ```
-This reads `.claude/SESSIONS_INDEX.md` (or the path in `ds-recall.config.json`'s `sessionsIndex`) and writes `_memory-graph/graph-data.js` in the project root. Re-run this any time the index changes — it's pure parsing, no model call.
+This command does not pre-approve the Bash tool, so Claude Code asks you to approve this one command (and the one-time copy in step 2). This reads `.claude/SESSIONS_INDEX.md` (or the path in `ds-recall.config.json`'s `sessionsIndex`) and writes `_memory-graph/graph-data.js` in the project root. Re-run this any time the index changes — it's pure parsing, no model call.
 
 ## 2. Ensure the viewer exists (one-time per project)
 If `_memory-graph/graph.html` doesn't exist yet, copy it from the plugin:
 ```
-<plugin-root>/ds-recall/assets/memory-graph.html  →  _memory-graph/graph.html
+<plugin-root>/assets/memory-graph.html  →  _memory-graph/graph.html
 ```
 It's a static, self-contained Canvas 2D page (no CDN, no build step) that reads the sibling `graph-data.js`. Never regenerate `graph.html` itself once a project has customized it — only `graph-data.js` changes on each run.
 
